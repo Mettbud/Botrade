@@ -27,6 +27,7 @@ describe("CYBERLEEK.env.ready", () => {
       cascadeProfitLockAfterTranches: 3,
       cascadeProfitLockGainPercent: 8,
       trailingStopPercent: 12,
+      trailingStopActivationPercent: 5,
     });
     expect(config.autoBuy).toMatchObject({
       reboundPercent: 1,

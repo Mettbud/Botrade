@@ -238,6 +238,11 @@ configured payout count. For example, after three payouts,
 falls back to entry +8% and holds there for the configured confirmation time.
 This is a trigger floor, not a guaranteed fill price during a fast gap.
 
+The ready PAPER profile arms its 12% trailing stop only after the position
+first reaches +5%. Before that activation, the separate 15% hard stop remains
+in force. This avoids turning an ordinary post-entry fluctuation into an
+immediate trailing exit, while retaining a defined loss ceiling.
+
 The frozen entry, initial amount and completed tranche count are reconstructed
 from SQLite after restart. Once any cascade amount has actually sold, further
 regular buys are blocked until that cycle closes; otherwise fresh tokens could
