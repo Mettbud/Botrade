@@ -144,6 +144,30 @@ bounce, before ever pairing it with live trading.
 The dashboard shows `Auto-buy: OFF` / `ON, watching for a dip (...)` /
 `WATCHING for rebound (...)` so you can see what state it's in at a glance.
 
+### Optional: on-chain pool watch (faster detection, off by default)
+
+Polling Jupiter every 1-3s means the bot can miss a move that fully
+happens between two polls. `ONCHAIN_WATCH_ENABLED=true` adds a second,
+faster channel: it subscribes directly to a pool's two reserve accounts
+over RPC (`connection.onAccountChange`) and flags a fast price move the
+instant it lands on-chain, instead of waiting for the next scheduled poll.
+
+**This never replaces Jupiter for pricing or trading** - it only makes the
+bot check Jupiter sooner. Every buy/sell is still decided from a real,
+fresh Jupiter quote; the pool watch is just a faster alarm bell. It also
+only understands simple constant-product pools (reserves = two SPL token
+account balances) - not bin-based AMMs like Meteora DLMM.
+
+Configure pools to watch in `WATCH_POOLS`:
+```
+WATCH_POOLS=raydium1:<baseVaultAddress>:<quoteVaultAddress>
+```
+`baseVault`/`quoteVault` are the pool's own reserve token accounts (found
+via a block explorer like Solscan - look up the pool address, then find
+the token account holding each side's balance), not the token mints.
+Multiple pools: comma separate multiple `label:base:quote` entries - each
+one watched independently, any one jumping triggers an early check.
+
 ## Run live trading
 
 Only after you're comfortable with paper trading and the numbers it's

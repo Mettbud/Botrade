@@ -11,13 +11,14 @@ import { JupiterClient } from "./jupiter/client.js";
 import { createLogger, type Logger } from "./logger/index.js";
 import { PriceFeed } from "./market/priceFeed.js";
 import { SolPriceTracker } from "./market/solPrice.js";
+import { PoolWatcher, type WatchedPool } from "./onchain/poolWatcher.js";
 import { getConnection } from "./solana/connection.js";
 import { AutoBuyManager } from "./trading/autoBuyManager.js";
 import { LiveTrader } from "./trading/liveTrader.js";
 import { PaperTrader } from "./trading/paperTrader.js";
 import { PositionManager } from "./trading/positionManager.js";
 import type { TradeExecutor } from "./trading/tradeExecutor.js";
-import { getSolBalanceSol, getTokenBalance } from "./wallet/balances.js";
+import { getMintDecimals, getSolBalanceSol, getTokenBalance } from "./wallet/balances.js";
 import { loadWalletKeypair } from "./wallet/keypair.js";
 
 async function main(): Promise<void> {
@@ -116,6 +117,8 @@ async function main(): Promise<void> {
     lastErrorMessage = `⚠️ price feed: ${String((err as Error)?.message ?? err)}`;
   });
 
+  const poolWatcher = await startPoolWatcherIfEnabled(config, connection, tokenMint, priceFeed, logger);
+
   let solBalance = 0;
   let tokenBalance = 0;
   const refreshBalances = async () => {
@@ -158,6 +161,7 @@ async function main(): Promise<void> {
     clearInterval(dashboardTimer);
     clearInterval(balanceTimer);
     priceFeed.stop();
+    void poolWatcher?.stop();
     db.close();
     logger.info("Bot stopped.");
     process.exit(0);
@@ -199,6 +203,58 @@ function warnAboutStaleEnvFile(logger: Logger): void {
   } catch {
     // .env.example not found next to the build (e.g. some deploy layouts) - not fatal.
   }
+}
+
+/**
+ * Off by default (ONCHAIN_WATCH_ENABLED=false). When on, watches each
+ * configured pool's two reserve accounts directly over RPC as a fast
+ * "something moved" trigger and pokes PriceFeed to check sooner - it never
+ * decides a trade itself, only how soon the real Jupiter-quote check runs.
+ */
+async function startPoolWatcherIfEnabled(
+  config: ReturnType<typeof getConfig>,
+  connection: ReturnType<typeof getConnection>,
+  tokenMint: PublicKey,
+  priceFeed: PriceFeed,
+  logger: Logger,
+): Promise<PoolWatcher | undefined> {
+  if (!config.onchain.watchEnabled) return undefined;
+  if (config.onchain.watchPools.length === 0) {
+    logger.warn("ONCHAIN_WATCH_ENABLED=true but WATCH_POOLS is empty - nothing to watch.");
+    return undefined;
+  }
+
+  const solMint = new PublicKey(config.token.solMint);
+  const [baseDecimals, quoteDecimals] = await Promise.all([
+    getMintDecimals(connection, tokenMint),
+    getMintDecimals(connection, solMint),
+  ]);
+
+  const watchedPools: WatchedPool[] = config.onchain.watchPools.map((p) => ({
+    label: p.label,
+    baseVault: new PublicKey(p.baseVault),
+    quoteVault: new PublicKey(p.quoteVault),
+  }));
+
+  const watcher = new PoolWatcher(
+    connection,
+    watchedPools,
+    baseDecimals,
+    quoteDecimals,
+    config.onchain.jumpWindowMs,
+    config.onchain.jumpPercent,
+  );
+  watcher.on("jump", (event: { poolLabel: string; changePercent: number }) => {
+    logger.info(
+      `⚡ on-chain jump: ${event.poolLabel} ${event.changePercent.toFixed(1)}% - triggering an early price check`,
+    );
+    priceFeed.triggerImmediateTick();
+  });
+  watcher.start();
+  logger.info(
+    `ONCHAIN_WATCH_ENABLED: watching ${watchedPools.length} pool(s) directly via RPC as a fast trigger.`,
+  );
+  return watcher;
 }
 
 function replayPaperUsdBalance(repo: TradesRepo, startingUsd: number): number {

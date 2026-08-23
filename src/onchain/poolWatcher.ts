@@ -8,8 +8,6 @@ export interface WatchedPool {
   label: string;
   baseVault: PublicKey;
   quoteVault: PublicKey;
-  baseDecimals: number;
-  quoteDecimals: number;
 }
 
 export interface PoolJumpEvent {
@@ -35,6 +33,8 @@ export class PoolWatcher extends EventEmitter {
   constructor(
     private readonly connection: Connection,
     private readonly pools: WatchedPool[],
+    private readonly baseDecimals: number,
+    private readonly quoteDecimals: number,
     jumpWindowMs: number,
     jumpThresholdPercent: number,
   ) {
@@ -78,7 +78,7 @@ export class PoolWatcher extends EventEmitter {
     entry[side] = amount;
     if (entry.base === undefined || entry.quote === undefined) return; // need both sides first
 
-    const price = priceFromReserves(entry.base, pool.baseDecimals, entry.quote, pool.quoteDecimals);
+    const price = priceFromReserves(entry.base, this.baseDecimals, entry.quote, this.quoteDecimals);
     const detector = this.detectors.get(pool.label)!;
     const result = detector.update(Date.now(), price);
 

@@ -29,6 +29,7 @@ export class PriceFeed extends EventEmitter {
   readonly history = new PriceHistoryBuffer();
   private timer: NodeJS.Timeout | undefined;
   private running = false;
+  private ticking = false;
   private consecutiveErrors = 0;
   private tokenDecimals: number | undefined;
   private hasOpenPosition = false;
@@ -62,6 +63,19 @@ export class PriceFeed extends EventEmitter {
     this.scheduleNext(0);
   }
 
+  /**
+   * Skips the wait and ticks right now - used when an on-chain pool watch
+   * (see onchain/poolWatcher.ts) flags a fast price jump. Never bypasses a
+   * tick already in flight (no overlapping fetches), and cancels the
+   * currently-scheduled wait so this doesn't cause an extra tick on top of
+   * the immediate one.
+   */
+  triggerImmediateTick(): void {
+    if (!this.running || this.ticking) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.scheduleNext(0);
+  }
+
   stop(): void {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
@@ -78,7 +92,12 @@ export class PriceFeed extends EventEmitter {
   // than a successful one (backoff) instead of firing on a fixed clock.
   private async runTick(): Promise<void> {
     if (!this.running) return;
-    await this.tick();
+    this.ticking = true;
+    try {
+      await this.tick();
+    } finally {
+      this.ticking = false;
+    }
     if (!this.running) return;
     this.scheduleNext(
       nextPollDelayMs(this.config.price.pollIntervalMs, this.consecutiveErrors),
