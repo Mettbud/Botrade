@@ -30,7 +30,7 @@ const rawEnvSchema = z.object({
   SOL_MINT: z
     .string()
     .trim()
-    .default("So11111111111111111111111111111111111111"),
+    .default("So11111111111111111111111111111111111111112"),
   USDC_MINT: z
     .string()
     .trim()
