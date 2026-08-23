@@ -13,8 +13,11 @@ import { PriceFeed } from "./market/priceFeed.js";
 import { SolPriceTracker } from "./market/solPrice.js";
 import { PoolWatcher, type WatchedPool } from "./onchain/poolWatcher.js";
 import { getConnection } from "./solana/connection.js";
+import { checkCrashBuyRebound } from "./strategy/crashBuyExit.js";
 import { AutoBuyManager } from "./trading/autoBuyManager.js";
 import { resolveAutoBuySizeUsd } from "./trading/autoBuySize.js";
+import { CrashBuyManager } from "./trading/crashBuyManager.js";
+import { resolveCrashBuySizeUsd } from "./trading/crashBuySize.js";
 import { LiveTrader } from "./trading/liveTrader.js";
 import { PaperTrader } from "./trading/paperTrader.js";
 import { PositionManager } from "./trading/positionManager.js";
@@ -66,6 +69,13 @@ async function main(): Promise<void> {
       `AUTO_BUY_ENABLED: watching for a ${config.autoBuy.dipPercent}%+ drop within ${config.autoBuy.lookbackMs}ms, then buying on the first rebound tick.`,
     );
   }
+  const crashBuyManager = new CrashBuyManager(config);
+  let crashBuyInFlight = false;
+  if (config.crashBuy.enabled) {
+    logger.info(
+      `CRASH_BUY_ENABLED: watching for a ${config.crashBuy.dropPercent}%+ drop within ${config.crashBuy.windowMs}ms, buying immediately up to $${config.crashBuy.maxUsd} (${config.crashBuy.portfolioPercent}% of available).`,
+    );
+  }
 
   let lastMovementMessage: string | undefined;
   let lastErrorMessage: string | undefined;
@@ -114,6 +124,69 @@ async function main(): Promise<void> {
         .catch((err) =>
           logger.error("AUTO_BUY failed", { err: String(err) }),
         );
+    }
+
+    // Crash-buy exit: if a crash-buy position is open and price has
+    // recovered to within tolerance of its pre-crash reference, sell in
+    // full right away rather than waiting on the normal stop-loss/trailing
+    // machinery. Checked after handlePriceSample so a position that just
+    // got closed by stop-loss/trailing this same tick correctly no-ops here.
+    const activePreDropPriceUsd = crashBuyManager.getActivePreDropPriceUsd();
+    if (!positionManager.hasOpenPosition()) {
+      crashBuyManager.clearActivePosition();
+    } else if (
+      activePreDropPriceUsd !== undefined &&
+      checkCrashBuyRebound(
+        sample.sellPriceUsd,
+        activePreDropPriceUsd,
+        config.crashBuy.reboundTolerancePercent,
+      )
+    ) {
+      logger.info(
+        `CRASH_BUY_EXIT: price recovered to $${sample.sellPriceUsd.toFixed(8)} (within ${config.crashBuy.reboundTolerancePercent}% of pre-crash $${activePreDropPriceUsd.toFixed(8)}) - selling in full.`,
+      );
+      positionManager
+        .manualSell(100, "CRASH_BUY_EXIT", sample.priceImpactSellBps)
+        .then(() => crashBuyManager.clearActivePosition())
+        .catch((err) => logger.error("CRASH_BUY_EXIT failed", { err: String(err) }));
+    }
+
+    if (!crashBuyInFlight) {
+      const crashSignal = crashBuyManager.evaluate(
+        priceFeed.history,
+        positionManager.hasOpenPosition(),
+        sample.timestampMs,
+      );
+      if (crashSignal.shouldBuy) {
+        crashBuyInFlight = true;
+        void (async () => {
+          try {
+            const solUsdPrice = await solPrice.getPrice();
+            const liveAvailableUsd =
+              Math.max(0, solBalance - config.trading.minSolReserve) * solUsdPrice;
+            const sizeUsd = resolveCrashBuySizeUsd(
+              executor.mode,
+              executor instanceof PaperTrader ? executor.usdBalance : 0,
+              liveAvailableUsd,
+              config.crashBuy.portfolioPercent,
+              config.crashBuy.maxUsd,
+            );
+            if (sizeUsd <= 0) {
+              logger.warn("CRASH_BUY signal fired but computed size was $0 - skipped.");
+              return;
+            }
+            logger.info(
+              `🔻 CRASH_BUY: ${config.crashBuy.dropPercent}%+ drop detected, buying $${sizeUsd.toFixed(2)} (pre-drop $${crashSignal.preDropPriceUsd?.toFixed(8)})`,
+            );
+            await positionManager.manualBuy(sizeUsd, "CRASH_BUY");
+          } catch (err) {
+            logger.error("CRASH_BUY failed", { err: String(err) });
+            crashBuyManager.clearActivePosition();
+          } finally {
+            crashBuyInFlight = false;
+          }
+        })();
+      }
     }
   });
   priceFeed.on("error", (err) => {
@@ -181,6 +254,7 @@ async function main(): Promise<void> {
     tokenMint,
     config,
     logger,
+    executor,
     onExit: shutdown,
   });
   process.on("SIGINT", shutdown);

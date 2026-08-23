@@ -1,4 +1,5 @@
 import type { BotConfig, TakeProfitLevel } from "../config/index.js";
+import { checkCascadeTakeProfit } from "./cascadeTakeProfit.js";
 import {
   averageEntryPriceUsd,
   unrealizedPnl,
@@ -24,7 +25,10 @@ export interface PositionEvaluation {
     /** The trailing-stop % actually applied this tick (may be scaled by peak gain). */
     appliedPercent: number;
   };
+  /** TAKE_PROFIT_MODE=entry only - the fixed ladder from entry. Empty in cascade mode. */
   dueTakeProfitLevels: TakeProfitLevel[];
+  /** TAKE_PROFIT_MODE=cascade only - undefined in entry mode. */
+  cascadeTakeProfit: { sellPercent: number; gainPercent: number } | undefined;
 }
 
 /**
@@ -38,6 +42,10 @@ export function evaluatePosition(
   trailingState: TrailingStopState,
   triggeredTakeProfitGains: ReadonlySet<number>,
   config: BotConfig,
+  /** TAKE_PROFIT_MODE=cascade only: price the next tranche's +gain% is
+   *  measured from - the last cascade sell's price, or entry before the
+   *  first one. Ignored in "entry" mode. */
+  cascadeReferencePriceUsd?: number,
 ): PositionEvaluation {
   const entryPrice = averageEntryPriceUsd(costBasis);
   const unrealized = unrealizedPnl(costBasis, currentSellPriceUsd);
@@ -54,6 +62,7 @@ export function evaluatePosition(
         appliedPercent: config.strategy.trailingStopPercent,
       },
       dueTakeProfitLevels: [],
+      cascadeTakeProfit: undefined,
     };
   }
 
@@ -83,13 +92,29 @@ export function evaluatePosition(
   );
   const trailing = { ...trailingResult, appliedPercent: appliedTrailingStopPercent };
 
-  const dueTakeProfitLevels = unrealized
-    ? checkTakeProfit(
-        unrealized.percent,
-        config.strategy.takeProfitLevels,
-        triggeredTakeProfitGains,
-      )
-    : [];
+  let dueTakeProfitLevels: TakeProfitLevel[] = [];
+  let cascadeTakeProfit: { sellPercent: number; gainPercent: number } | undefined;
+
+  if (config.strategy.takeProfitMode === "cascade") {
+    const reference = cascadeReferencePriceUsd ?? entryPrice;
+    const check = checkCascadeTakeProfit(
+      currentSellPriceUsd,
+      reference,
+      config.strategy.cascadeTakeProfitPercent,
+      config.strategy.cascadeTakeProfitSellPercent,
+    );
+    if (check.shouldSell) {
+      cascadeTakeProfit = { sellPercent: check.sellPercent, gainPercent: check.gainPercent };
+    }
+  } else {
+    dueTakeProfitLevels = unrealized
+      ? checkTakeProfit(
+          unrealized.percent,
+          config.strategy.takeProfitLevels,
+          triggeredTakeProfitGains,
+        )
+      : [];
+  }
 
   return {
     averageEntryPriceUsd: entryPrice,
@@ -97,5 +122,6 @@ export function evaluatePosition(
     stopLoss,
     trailing,
     dueTakeProfitLevels,
+    cascadeTakeProfit,
   };
 }

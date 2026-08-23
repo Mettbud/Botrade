@@ -118,6 +118,7 @@ Momentum/dump alerts (e.g. `🚀 MOMENTUM: +8.4% / 30s`, `⚠️ DUMP DETECTED:
 | `buy <usd>` | Buy up to `<usd>` dollars worth (still capped by `MAX_TRADE_USD`) |
 | `sell 25` / `sell 50` / `sell 100` | Sell that percent of the current position |
 | `panic` | Emergency exit: previews the quote, price impact, expected SOL and slippage, then sells 100% immediately, bypassing the price-impact/slippage guard |
+| `reset` | PAPER only (refused in live): wipes PAPER trade history and resets the position and paper balance back to `PAPER_BALANCE_USD` - a clean slate for testing a new config without restarting the process |
 | `status` | Force a dashboard redraw |
 | `help` | List commands |
 | `quit` / `exit` or `Ctrl+C` | Stop the bot cleanly |
@@ -162,6 +163,73 @@ results at the default settings preview the *strategy*, not the exact
 dollar amounts LIVE will use - if you want paper to also preview LIVE's
 sizing 1:1, set `PAPER_POSITION_SIZE_PERCENT` so that percent of your
 paper balance equals `MAX_TRADE_USD`.
+
+### Take-profit modes: entry ladder vs cascade
+
+`TAKE_PROFIT_MODE=entry` (default) is the fixed ladder described above -
+`TAKE_PROFIT_LEVELS` gain thresholds are always measured from the original
+entry price, and each level fires once.
+
+`TAKE_PROFIT_MODE=cascade` instead repeats a single rule indefinitely:
+every time price rises `CASCADE_TAKE_PROFIT_PERCENT`% **from the last
+tranche's sell price** (or from entry, before the first tranche), sell
+`CASCADE_TAKE_PROFIT_SELL_PERCENT`% of whatever's currently left. On a
+sustained uptrend this keeps realizing gains tranche after tranche instead
+of stopping after 3 fixed levels - e.g. with the defaults (20%/20%), a
+position that goes $1 -> $1.20 -> $1.44 -> $1.73 sells 20% at each step,
+leaving 100% -> 80% -> 64% -> 51.2% of the original position. The
+remainder never reaches zero through cascade take-profit alone - it's
+always still protected by `STOP_LOSS_PERCENT`/`TRAILING_STOP_PERCENT`,
+which are what eventually close the position out if the trend reverses.
+
+An averaging-in buy (see auto-buy/crash-buy below) never resets the
+cascade's reference price - new tokens just join the existing position at
+whatever threshold is already in progress, they don't restart it. A
+`TAKE_PROFIT` sell (in either mode) is also deliberately excluded from
+`AUTO_BUY_REQUIRE_BELOW_LAST_SELL`'s "last sell" tracking - otherwise a
+run of successful cascade tranches on an uptrend would keep ratcheting
+that gate higher until auto-buy/averaging could never fire again.
+
+Lower thresholds mean more tranches to cover the same total move, and
+every tranche is a real swap - check your live spread/price impact numbers
+on the dashboard (`Price impact: buy X% sell Y% spread Z%`) before going
+much below the ~15-20% range; on a low-liquidity memecoin the cumulative
+cost of many small tranches adds up.
+
+### Optional: crash-buy (very fast drop, off by default)
+
+A separate, faster opt-in from `AUTO_BUY_ENABLED` above:
+`CRASH_BUY_ENABLED=true` watches the live executable USD price history for
+a very sharp move - price dropping `CRASH_BUY_DROP_PERCENT`% (default 20%)
+within `CRASH_BUY_WINDOW_MS` (default 1000ms) - and buys **immediately**,
+with no dip-then-rebound wait like normal auto-buy. It still only ever
+buys through a real, fresh Jupiter quote - never a raw on-chain swap - and
+only while flat. Detection granularity is bounded by how often a real
+price sample actually lands (`PRICE_POLL_INTERVAL_MS`, sped up by
+`ONCHAIN_WATCH_ENABLED` jumps if that's also on) - it isn't a promise of
+true sub-poll-interval detection, just the window the drop is measured
+over once a sample does land.
+
+Sizing is deliberately larger than a normal auto-buy, since the whole
+point is catching a rare, genuine crash - a $1 nibble wouldn't be worth
+chasing it for. It spends `CRASH_BUY_PORTFOLIO_PERCENT`% (default 50%) of
+whatever's currently available (PAPER balance, or live SOL balance above
+`MIN_SOL_RESERVE` converted to USD), hard-capped at `CRASH_BUY_MAX_USD`
+(default $50) either way - both apply on PAPER and LIVE.
+
+Also gated by `CRASH_BUY_MAX_SPREAD_BPS` (default 500 = 5%): a genuine
+crash naturally widens spread, so this is deliberately looser than normal
+trading's tolerance - it only rejects the extreme, pathological case (a
+near-drained/rugged pool), not ordinary crash volatility.
+
+Exit is its own rule, not the normal take-profit ladder: once price
+recovers to within `CRASH_BUY_REBOUND_TOLERANCE_PERCENT`% (default 3%) of
+P0 - the price right before the crash - the whole crash-buy position sells
+immediately (`CRASH_BUY_EXIT` in the trade log), on the logic that
+recovering most of the way back is the win condition. If price instead
+keeps falling and never recovers, the position just sits under the normal
+`STOP_LOSS_PERCENT`/`TRAILING_STOP_PERCENT` protection like any other -
+there's no separate, tighter stop-loss for crash-buy specifically.
 
 ### Optional: on-chain pool watch (faster detection, off by default)
 

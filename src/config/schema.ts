@@ -67,6 +67,14 @@ const rawEnvSchema = z.object({
   PRICE_IMPACT_SPIKE_BPS: numFromString(200),
 
   TAKE_PROFIT_LEVELS: z.string().default("20:20,40:20,70:100"),
+  // "entry" (default): TAKE_PROFIT_LEVELS is a fixed ladder measured from
+  // the original entry price - unchanged legacy behavior. "cascade": ignores
+  // TAKE_PROFIT_LEVELS and instead repeats one rule forever - "+X% from the
+  // last tranche's sell price -> sell Y% of what's left" - so gains keep
+  // compounding with the trend instead of stopping after a fixed 3 levels.
+  TAKE_PROFIT_MODE: z.enum(["entry", "cascade"]).default("entry"),
+  CASCADE_TAKE_PROFIT_PERCENT: numFromString(20),
+  CASCADE_TAKE_PROFIT_SELL_PERCENT: numFromString(20),
   STOP_LOSS_PERCENT: numFromString(15),
   TRAILING_STOP_PERCENT: numFromString(12),
   TRAILING_STOP_ACTIVATION_PERCENT: numFromString(0),
@@ -103,6 +111,33 @@ const rawEnvSchema = z.object({
     .string()
     .default("true")
     .transform((v) => v.trim().toLowerCase() === "true"),
+
+  // Off by default - a deliberate, separate opt-in from AUTO_BUY. Detects a
+  // very fast, sharp drop (CRASH_BUY_DROP_PERCENT within CRASH_BUY_WINDOW_MS,
+  // measured on the live executable USD price history) and buys immediately
+  // instead of waiting for a dip->rebound like normal auto-buy - still
+  // always through a real Jupiter quote, never a raw on-chain swap. Only
+  // buys while flat. Sized as a real chunk of the wallet on purpose (see
+  // CRASH_BUY_PORTFOLIO_PERCENT/CRASH_BUY_MAX_USD) since the whole point is
+  // to catch a real, rare crash - a $1 nibble wouldn't be worth chasing it for.
+  CRASH_BUY_ENABLED: boolFromString,
+  CRASH_BUY_DROP_PERCENT: numFromString(20),
+  CRASH_BUY_WINDOW_MS: numFromString(1000),
+  // Hard USD ceiling for a single crash-buy - a separate, higher cap from
+  // MAX_TRADE_USD (which stays the normal per-trade limit everywhere else).
+  CRASH_BUY_MAX_USD: numFromString(50),
+  CRASH_BUY_PORTFOLIO_PERCENT: numFromString(50),
+  // Exit rule for a crash-buy position: sell in full once price recovers to
+  // within this tolerance of the price right before the crash (P0) - i.e.
+  // price >= P0 * (1 - tolerance/100). Until then the position just sits
+  // under the normal STOP_LOSS_PERCENT/TRAILING_STOP_PERCENT protection.
+  CRASH_BUY_REBOUND_TOLERANCE_PERCENT: numFromString(3),
+  // A genuine crash naturally widens spread - too tight a limit would
+  // block crash-buy right when it's meant to fire. This ceiling exists to
+  // reject the extreme, pathological case (a near-drained/rugged pool),
+  // not normal crash volatility - deliberately looser than everyday
+  // trading would tolerate.
+  CRASH_BUY_MAX_SPREAD_BPS: numFromString(500),
 
   // Off by default. Watches raw pool reserve accounts directly over RPC as
   // a fast "something moved" trigger - never the price a trade is decided
@@ -182,6 +217,9 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     },
     strategy: {
       takeProfitLevels: parseTakeProfitLevels(raw.TAKE_PROFIT_LEVELS),
+      takeProfitMode: raw.TAKE_PROFIT_MODE,
+      cascadeTakeProfitPercent: raw.CASCADE_TAKE_PROFIT_PERCENT,
+      cascadeTakeProfitSellPercent: raw.CASCADE_TAKE_PROFIT_SELL_PERCENT,
       stopLossPercent: raw.STOP_LOSS_PERCENT,
       trailingStopPercent: raw.TRAILING_STOP_PERCENT,
       trailingStopActivationPercent: raw.TRAILING_STOP_ACTIVATION_PERCENT,
@@ -196,6 +234,15 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       allowAveraging: raw.AUTO_BUY_ALLOW_AVERAGING,
       minGapMs: raw.AUTO_BUY_MIN_GAP_MS,
       requireBelowLastSell: raw.AUTO_BUY_REQUIRE_BELOW_LAST_SELL,
+    },
+    crashBuy: {
+      enabled: raw.CRASH_BUY_ENABLED,
+      dropPercent: raw.CRASH_BUY_DROP_PERCENT,
+      windowMs: raw.CRASH_BUY_WINDOW_MS,
+      maxUsd: raw.CRASH_BUY_MAX_USD,
+      portfolioPercent: raw.CRASH_BUY_PORTFOLIO_PERCENT,
+      reboundTolerancePercent: raw.CRASH_BUY_REBOUND_TOLERANCE_PERCENT,
+      maxSpreadBps: raw.CRASH_BUY_MAX_SPREAD_BPS,
     },
     onchain: {
       watchEnabled: raw.ONCHAIN_WATCH_ENABLED,

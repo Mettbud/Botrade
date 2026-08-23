@@ -53,7 +53,7 @@ export function formatDashboard(s: DashboardState): string {
     lines.push(`Highest since entry:  ${usd(ev.trailing.state.highestPriceUsd, 8)}`);
     lines.push(`Drawdown from high:   -${ev.trailing.drawdownFromHighPercent.toFixed(2)}%`);
     lines.push(
-      `Stop loss (${s.stopLossPercent}%):     ${ev.stopLoss.triggered ? colorize("TRIGGERED", colors.RED) : `${ev.stopLoss.lossPercent.toFixed(2)}% loss`}`,
+      `Stop loss (${s.stopLossPercent}%):     ${ev.stopLoss.triggered ? colorize("TRIGGERED", colors.RED) : formatStopLossMargin(ev.stopLoss.lossPercent)}`,
     );
     lines.push(
       `Trailing stop (${ev.trailing.appliedPercent}%): ${ev.trailing.triggered ? colorize("TRIGGERED", colors.RED) : ev.trailing.state.armed ? "armed" : "not armed yet"}`,
@@ -100,6 +100,20 @@ export function formatDashboard(s: DashboardState): string {
   return lines.join("\n");
 }
 
+/**
+ * stopLoss.lossPercent is (entry - current) / entry - positive means an
+ * actual loss (distance still to go before the stop triggers), negative
+ * means the position is in profit. Labeling a negative number "loss"
+ * unconditionally read as "-5.36% loss" while up 5.36% - fix the label to
+ * match the sign instead of always saying "loss".
+ */
+export function formatStopLossMargin(lossPercent: number): string {
+  if (lossPercent <= 0) {
+    return `no loss (+${Math.abs(lossPercent).toFixed(2)}% above entry)`;
+  }
+  return `${lossPercent.toFixed(2)}% loss`;
+}
+
 function formatAutoBuyLine(status: AutoBuyStatus): string {
   if (!status.enabled) return `Auto-buy: ${colorize("OFF", colors.DIM)}`;
   if (status.watching) {
@@ -109,9 +123,14 @@ function formatAutoBuyLine(status: AutoBuyStatus): string {
 }
 
 export function renderDashboard(s: DashboardState): void {
-  console.clear();
+  // console.clear() is unreliable on some Windows terminals (it's a no-op
+  // or gets ignored there), which makes every refresh stack up under the
+  // last one instead of replacing it. This ANSI sequence clears the visible
+  // screen AND scrollback and homes the cursor - works everywhere console.clear()
+  // does, plus the terminals where it doesn't.
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
   console.log(formatDashboard(s));
   console.log(
-    "\ncommands: buy <usd>  sell <25|50|100>  panic  status  quit",
+    "\ncommands: buy <usd>  sell <25|50|100>  panic  reset  status  quit",
   );
 }

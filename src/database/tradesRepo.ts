@@ -73,6 +73,12 @@ export class TradesRepo {
   findAll(): TradeRow[] {
     return (this.selectAllStmt.all() as TradeRowRaw[]).map(fromRaw);
   }
+
+  /** Wipes every trade for one mode - used by the "reset" CLI command (PAPER only). */
+  deleteByMode(mode: Trade["mode"]): number {
+    const info = this.db.prepare("DELETE FROM trades WHERE mode = ?").run(mode);
+    return info.changes;
+  }
 }
 
 function fromRaw(row: TradeRowRaw): TradeRow {

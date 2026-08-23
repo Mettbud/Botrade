@@ -3,6 +3,8 @@ export type TradeMode = "PAPER" | "LIVE";
 export type TradeReason =
   | "MANUAL"
   | "AUTO_BUY"
+  | "CRASH_BUY"
+  | "CRASH_BUY_EXIT"
   | "STOP_LOSS"
   | "TRAILING_STOP"
   | "TAKE_PROFIT"

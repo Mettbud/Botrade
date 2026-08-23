@@ -5,7 +5,9 @@ import { getQuote } from "../jupiter/quote.js";
 import type { JupiterClient } from "../jupiter/client.js";
 import type { Logger } from "../logger/index.js";
 import type { PriceFeed } from "../market/priceFeed.js";
+import { PaperTrader } from "../trading/paperTrader.js";
 import type { PositionManager } from "../trading/positionManager.js";
+import type { TradeExecutor } from "../trading/tradeExecutor.js";
 import { getMintDecimals } from "../wallet/balances.js";
 
 export interface CommandDeps {
@@ -16,6 +18,7 @@ export interface CommandDeps {
   tokenMint: PublicKey;
   config: BotConfig;
   logger: Logger;
+  executor: TradeExecutor;
   onExit: () => void;
 }
 
@@ -31,7 +34,7 @@ export function startCommandLoop(deps: CommandDeps): void {
 
 async function handleLine(line: string, deps: CommandDeps): Promise<void> {
   const [cmd, arg] = line.split(/\s+/);
-  const { positionManager, priceFeed, config, logger } = deps;
+  const { positionManager, priceFeed, config, logger, executor } = deps;
 
   switch (cmd?.toLowerCase()) {
     case "buy": {
@@ -55,10 +58,25 @@ async function handleLine(line: string, deps: CommandDeps): Promise<void> {
       await runPanic(deps);
       return;
     }
+    case "reset": {
+      if (config.trading.mode === "live" || !(executor instanceof PaperTrader)) {
+        console.log("reset: refused - not available in live mode (safety).");
+        return;
+      }
+      positionManager.reset();
+      executor.usdBalance = config.trading.paperBalanceUsd;
+      executor.tokenAmount = 0;
+      logger.info(
+        `PAPER trade history and position reset - fresh balance $${config.trading.paperBalanceUsd.toFixed(2)}.`,
+      );
+      return;
+    }
     case "status":
       return; // dashboard redraws on its own timer
     case "help":
-      console.log("commands: buy <usd>  sell <25|50|100>  panic  status  quit");
+      console.log(
+        "commands: buy <usd>  sell <25|50|100>  panic  reset  status  quit",
+      );
       return;
     case "quit":
     case "exit":
