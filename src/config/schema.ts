@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseTakeProfitLevels } from "./takeProfitLevels.js";
+import { parseWatchPools } from "./watchPools.js";
 
 const boolFromString = z
   .string()
@@ -77,6 +78,15 @@ const rawEnvSchema = z.object({
   // before the bot starts watching for a rebound to buy into.
   AUTO_BUY_DIP_PERCENT: numFromString(50),
   AUTO_BUY_DIP_LOOKBACK_MS: numFromString(60_000),
+
+  // Off by default. Watches raw pool reserve accounts directly over RPC as
+  // a fast "something moved" trigger - never the price a trade is decided
+  // on (that's always a fresh Jupiter quote). See src/onchain/.
+  ONCHAIN_WATCH_ENABLED: boolFromString,
+  ONCHAIN_JUMP_PERCENT: numFromString(5),
+  ONCHAIN_JUMP_WINDOW_MS: numFromString(3_000),
+  // "label:baseVault:quoteVault:baseDecimals:quoteDecimals" per pool, comma separated.
+  WATCH_POOLS: z.string().default(""),
 
   PRIORITY_LEVEL: z
     .enum(["low", "medium", "high", "veryHigh"])
@@ -156,6 +166,12 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       enabled: raw.AUTO_BUY_ENABLED,
       dipPercent: raw.AUTO_BUY_DIP_PERCENT,
       lookbackMs: raw.AUTO_BUY_DIP_LOOKBACK_MS,
+    },
+    onchain: {
+      watchEnabled: raw.ONCHAIN_WATCH_ENABLED,
+      jumpPercent: raw.ONCHAIN_JUMP_PERCENT,
+      jumpWindowMs: raw.ONCHAIN_JUMP_WINDOW_MS,
+      watchPools: parseWatchPools(raw.WATCH_POOLS),
     },
     execution: {
       priorityLevel: raw.PRIORITY_LEVEL,
