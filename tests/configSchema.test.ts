@@ -78,3 +78,70 @@ describe("adaptive auto-buy config", () => {
     ).toThrow();
   });
 });
+
+describe("cascade profit lock and crash dashboard config", () => {
+  it("maps the explicit tranche-aware settings", () => {
+    const config = buildConfig({
+      ...MINIMAL_ENV,
+      CASCADE_PROFIT_LOCK_ENABLED: "true",
+      CASCADE_PROFIT_LOCK_AFTER_TRANCHES: "3",
+      CASCADE_PROFIT_LOCK_GAIN_PERCENT: "8",
+      CASCADE_PROFIT_LOCK_CONFIRMATION_ENABLED: "true",
+      CASCADE_PROFIT_LOCK_CONFIRMATION_MS: "4000",
+      CRASH_BUY_STATUS_HOLD_MS: "60000",
+    } as NodeJS.ProcessEnv);
+
+    expect(config.strategy).toMatchObject({
+      cascadeProfitLockEnabled: true,
+      cascadeProfitLockAfterTranches: 3,
+      cascadeProfitLockGainPercent: 8,
+      cascadeProfitLockConfirmationEnabled: true,
+      cascadeProfitLockConfirmationMs: 4_000,
+    });
+    expect(config.crashBuy.statusHoldMs).toBe(60_000);
+  });
+
+  it("uses a crash window long enough for multiple normal price samples", () => {
+    expect(buildConfig(MINIMAL_ENV).crashBuy.windowMs).toBe(12_000);
+  });
+
+  it("rejects a crash window shorter than one poll when crash-buy is enabled", () => {
+    expect(() =>
+      buildConfig({
+        ...MINIMAL_ENV,
+        CRASH_BUY_ENABLED: "true",
+        PRICE_POLL_INTERVAL_MS: "4000",
+        CRASH_BUY_WINDOW_MS: "1000",
+      } as NodeJS.ProcessEnv),
+    ).toThrow("CRASH_BUY_WINDOW_MS");
+  });
+
+  it("rejects a profit floor that was never reached at its activation tranche", () => {
+    expect(() =>
+      buildConfig({
+        ...MINIMAL_ENV,
+        CASCADE_TAKE_PROFIT_PERCENT: "2",
+        CASCADE_PROFIT_LOCK_ENABLED: "true",
+        CASCADE_PROFIT_LOCK_AFTER_TRANCHES: "3",
+        CASCADE_PROFIT_LOCK_GAIN_PERCENT: "8",
+      } as NodeJS.ProcessEnv),
+    ).toThrow("CASCADE_PROFIT_LOCK_GAIN_PERCENT");
+  });
+
+  it("rejects invalid cascade percentages and an unreachable lock tranche", () => {
+    expect(() =>
+      buildConfig({
+        ...MINIMAL_ENV,
+        CASCADE_TAKE_PROFIT_PERCENT: "0",
+      } as NodeJS.ProcessEnv),
+    ).toThrow();
+    expect(() =>
+      buildConfig({
+        ...MINIMAL_ENV,
+        CASCADE_TAKE_PROFIT_SELL_PERCENT: "20",
+        CASCADE_PROFIT_LOCK_ENABLED: "true",
+        CASCADE_PROFIT_LOCK_AFTER_TRANCHES: "6",
+      } as NodeJS.ProcessEnv),
+    ).toThrow("CASCADE_PROFIT_LOCK_AFTER_TRANCHES");
+  });
+});

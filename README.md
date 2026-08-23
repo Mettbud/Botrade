@@ -26,6 +26,12 @@ npm install
 cp .env.example .env
 ```
 
+For the agreed CYBERLEEK short-term PAPER profile, use
+`CYBERLEEK.env.ready` instead. It is a complete secret-free file generated
+for copying into `.env`; only the owner fills `WALLET_PRIVATE_KEY` and a newly
+rotated `JUPITER_API_KEY`. The bot and repository changes never edit the real
+`.env`.
+
 ## 1. Create a dedicated hot wallet
 
 Do this with the Solana CLI (or any tool you trust), **not** with your main
@@ -55,7 +61,7 @@ Open `.env.example`, read every line, then fill in `.env`. Key fields:
 | `JUPITER_API_KEY` | Optional. Get one free at https://portal.jup.ag for higher rate limits. Without it the bot uses Jupiter's free `lite-api.jup.ag` tier. |
 | `TARGET_TOKEN_MINT` / `TARGET_TOKEN_SYMBOL` | The token this run trades. Defaults to CYBERLEEK; change later to trade something else. |
 | `TRADING_MODE` + `ENABLE_LIVE_TRADING` | The live-trading gate — see below. |
-| `MAX_TRADE_USD` | Hard cap per trade, in USD. Starts at `1`. |
+| `MAX_TRADE_USD` | Hard cap for each LIVE buy, in USD. Starts at `1`; PAPER buys are limited only by the virtual balance. |
 | `MIN_SOL_RESERVE` | SOL that must always stay untouched. |
 | `PAPER_BALANCE_USD` | Starting virtual balance for paper trading. |
 | `STOP_LOSS_PERCENT`, `TRAILING_STOP_PERCENT`, `TAKE_PROFIT_LEVELS` | Strategy thresholds — all optional to tune. |
@@ -69,7 +75,7 @@ Open `.env.example`, read every line, then fill in `.env`. Key fields:
   accident is not enough to spend real money. If only one is set, the bot
   refuses to start at all until you fix it, rather than silently falling
   back.
-- **`MAX_TRADE_USD`.** Every buy is checked against this before it is sent.
+- **`MAX_TRADE_USD`.** Every LIVE buy is checked against this before it is sent.
   Anything larger is rejected with an `ERROR` in the terminal — no partial
   send, no silent clamp.
 - **`MIN_SOL_RESERVE`.** A live buy is rejected if it would leave the
@@ -124,13 +130,18 @@ Momentum/dump alerts (e.g. `🚀 MOMENTUM: +8.4% / 30s`, `⚠️ DUMP DETECTED:
 
 | Command | Effect |
 |---|---|
-| `buy <usd>` | Buy up to `<usd>` dollars worth (still capped by `MAX_TRADE_USD`) |
+| `buy <usd>` | Buy `<usd>` dollars worth; LIVE is capped by `MAX_TRADE_USD`, PAPER by its virtual balance |
 | `sell 25` / `sell 50` / `sell 100` | Sell that percent of the current position |
 | `panic` | Emergency exit: previews the quote, price impact, expected SOL and slippage, then sells 100% immediately, bypassing the price-impact/slippage guard |
-| `reset` | PAPER only (refused in live): wipes PAPER trade history and resets the position and paper balance back to `PAPER_BALANCE_USD` - a clean slate for testing a new config without restarting the process |
+| `reset` | PAPER only (refused in live): wipes PAPER trades, balances, rolling price signals, auto-buy cooldown/watch state, and retained dashboard errors/events. It keeps the configuration already loaded by this process. |
 | `status` | Force a dashboard redraw |
 | `help` | List commands |
 | `quit` / `exit` or `Ctrl+C` | Stop the bot cleanly |
+
+`.env` is read once when the bot starts. After replacing or editing `.env`, use
+`quit` and start the bot again; `reset` deliberately does **not** hot-reload
+configuration. This avoids mixing one session's trades with strategy values
+that changed halfway through the process.
 
 ### Optional: auto-buy (off by default)
 
@@ -203,41 +214,44 @@ previewing sizes larger than `MAX_TRADE_USD`.
 `TAKE_PROFIT_LEVELS` gain thresholds are always measured from the original
 entry price, and each level fires once.
 
-`TAKE_PROFIT_MODE=cascade` instead repeats a single rule indefinitely:
-every time price rises `CASCADE_TAKE_PROFIT_PERCENT`% **from the last
-tranche's sell price** (or from entry, before the first tranche), sell
-`CASCADE_TAKE_PROFIT_SELL_PERCENT`% of whatever's currently left. On a
-sustained uptrend this keeps realizing gains tranche after tranche instead
-of stopping after 3 fixed levels - e.g. with the defaults (20%/20%), a
-position that goes $1 -> $1.20 -> $1.44 -> $1.73 sells 20% at each step,
-leaving 100% -> 80% -> 64% -> 51.2% of the original position. The
-remainder never reaches zero through cascade take-profit alone - it's
-always still protected by `STOP_LOSS_PERCENT`/`TRAILING_STOP_PERCENT`,
-which are what eventually close the position out if the trend reverses.
+`TAKE_PROFIT_MODE=cascade` uses linear targets from one frozen entry:
+`+X%`, `+2X%`, `+3X%` and so on. Each target sells
+`CASCADE_TAKE_PROFIT_SELL_PERCENT`% of the position captured when the cycle
+opened, not a percentage of a shrinking remainder. With the requested
+5%/20% profile, $1.00 -> $1.05 -> $1.10 -> $1.15 leaves exactly
+100% -> 80% -> 60% -> 40%. If one price sample jumps across several targets,
+the due tranches are combined into one rate-limit-friendly swap and their
+count is persisted with the trade.
 
-An averaging-in buy (see auto-buy/crash-buy below) never resets the
-cascade's reference price - new tokens just join the existing position at
-whatever threshold is already in progress, they don't restart it. A
-`TAKE_PROFIT` sell (in either mode) is also deliberately excluded from
+`CASCADE_PROFIT_LOCK_ENABLED=true` can protect the regular remainder after a
+configured payout count. For example, after three payouts,
+`CASCADE_PROFIT_LOCK_GAIN_PERCENT=8` closes the remainder if executable price
+falls back to entry +8% and holds there for the configured confirmation time.
+This is a trigger floor, not a guaranteed fill price during a fast gap.
+
+The frozen entry, initial amount and completed tranche count are reconstructed
+from SQLite after restart. Once any cascade amount has actually sold, further
+regular buys are blocked until that cycle closes; otherwise fresh tokens could
+inherit already-completed payout targets. The ready profile additionally uses
+`AUTO_BUY_ALLOW_AVERAGING=false`. A take-profit sell is also deliberately excluded from
 `AUTO_BUY_REQUIRE_BELOW_LAST_SELL`'s "last sell" tracking - otherwise a
 run of successful cascade tranches on an uptrend would keep ratcheting
 that gate higher until auto-buy/averaging could never fire again.
 
-Lower thresholds mean more tranches to cover the same total move, and
-every tranche is a real swap - check your live spread/price impact numbers
-on the dashboard (`Price impact: buy X% sell Y% spread Z%`) before going
-much below the ~15-20% range; on a low-liquidity memecoin the cumulative
-cost of many small tranches adds up.
+Lower thresholds mean more potential swaps, although skipped targets are
+batched. Check live spread/price impact before enabling real money; on a
+low-liquidity token the cumulative cost can still be material.
 
 ### Optional: crash-buy (very fast drop, off by default)
 
 A separate, faster opt-in from `AUTO_BUY_ENABLED` above:
 `CRASH_BUY_ENABLED=true` watches the live executable USD price history for
 a very sharp move - price dropping `CRASH_BUY_DROP_PERCENT`% (default 20%)
-within `CRASH_BUY_WINDOW_MS` (default 1000ms) - and buys **immediately**,
+within `CRASH_BUY_WINDOW_MS` (default 12000ms) - and buys **immediately**,
 with no dip-then-rebound wait like normal auto-buy. It still only ever
 buys through a real, fresh Jupiter quote - never a raw on-chain swap - and
-only while flat. Detection granularity is bounded by how often a real
+at most one isolated crash lot at a time. A regular position may coexist
+with it. Detection granularity is bounded by how often a real
 price sample actually lands (`PRICE_POLL_INTERVAL_MS`, sped up by
 `ONCHAIN_WATCH_ENABLED` jumps if that's also on) - it isn't a promise of
 true sub-poll-interval detection, just the window the drop is measured
@@ -257,12 +271,16 @@ near-drained/rugged pool), not ordinary crash volatility.
 
 Exit is its own rule, not the normal take-profit ladder: once price
 recovers to within `CRASH_BUY_REBOUND_TOLERANCE_PERCENT`% (default 3%) of
-P0 - the price right before the crash - the whole crash-buy position sells
-immediately (`CRASH_BUY_EXIT` in the trade log), on the logic that
-recovering most of the way back is the win condition. If price instead
-keeps falling and never recovers, the position just sits under the normal
-`STOP_LOSS_PERCENT`/`TRAILING_STOP_PERCENT` protection like any other -
-there's no separate, tighter stop-loss for crash-buy specifically.
+P0 - the price right before the crash - exactly the recorded crash-lot amount
+sells (`CRASH_BUY_EXIT` in the trade log). Regular tokens are left untouched,
+even if they share the same fungible wallet balance. The lot ID, P0, initial
+amount and remaining cost are persisted, so a restart does not lose the exit.
+The dashboard keeps ACTIVE state until exit and retains the last crash event
+for `CRASH_BUY_STATUS_HOLD_MS` afterwards. Regular and crash books evaluate
+`STOP_LOSS_PERCENT`/`TRAILING_STOP_PERCENT` independently: a stop triggered in
+only one book sells only that book. If both independently cross the hard
+stop-loss on the same sample, one aggregate emergency swap closes both faster;
+the explicit `panic` command is also always global.
 
 ### Optional: on-chain pool watch (faster detection, off by default)
 
@@ -340,6 +358,12 @@ that:
   visible on the dashboard itself until the next successful price update,
   instead of disappearing on the next clear.
 
+On Windows, follow the durable log live in a second PowerShell window:
+
+```powershell
+Get-Content .\data\bot.log -Tail 100 -Wait
+```
+
 All Jupiter GET/POST calls (price quotes, trade quotes and paper fee
 estimates) now pass through one process-wide FIFO. Their starts are spaced by
 `JUPITER_MIN_REQUEST_INTERVAL_MS` (2100 ms by default), so an on-chain early
@@ -373,7 +397,10 @@ Everything is local SQLite (`DB_PATH`, default `./data/cyberleek.sqlite`):
 - `trades` — every buy/sell (paper or live) with token/SOL/USD amounts,
   the quote used, expected vs. actual output, slippage, price impact, fees,
   tx signature (live), realized P&L, and the reason
-  (`MANUAL` / `STOP_LOSS` / `TRAILING_STOP` / `TAKE_PROFIT` / `PANIC_EXIT`).
+  (including scoped regular/crash stops, cascade/profit-lock and `PANIC_EXIT`).
+- `trailing_states` — the persisted high-water mark and armed state for the
+  regular position and each isolated crash lot. A position identity prevents a
+  stale peak from being reused by a later position after a restart.
 
 ## Architecture
 
@@ -468,8 +495,7 @@ of `panic` is "get me out now."
 - Buy/sell counts, on-chain volume and whale-trade detection are not
   implemented — they need a dedicated transaction indexer this bot doesn't
   have, and it seemed worse to fake them than to leave them out.
-- After a restart, the trailing-stop "highest since entry" resets to the
-  current average entry price (not the true historical high before
-  restart), and already-triggered take-profit levels are forgotten. Both
-  are safe defaults (nothing sells more than it should), just not
-  perfectly stateful across restarts in v1.
+- Trailing-stop high-water marks, cascade counters and isolated crash lots are
+  restored after restart. Very old trades written before crash-lot metadata was
+  introduced are reconciled conservatively and pause exact crash automation if
+  their ownership cannot be proven.

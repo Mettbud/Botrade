@@ -50,6 +50,18 @@ export class AutoBuyManager {
     this.effectiveDipPercent = config.autoBuy.dipPercent;
   }
 
+  /** Clears signal/cooldown state for a fresh PAPER testing session. */
+  reset(): void {
+    this.state = IDLE_DIP_WATCH;
+    this.lastBuyAtMs = -Infinity;
+    this.lastDropPercentFromHigh = undefined;
+    this.effectiveDipPercent = this.config.autoBuy.dipPercent;
+    this.peakProtectionActive = false;
+    this.recentRunUpPercent = undefined;
+    this.volatilityProtectionActive = false;
+    this.realizedVolatilityPercent = undefined;
+  }
+
   /**
    * Returns true exactly on the tick a buy should fire.
    * `lastSellPriceUsd` (PositionManager.getLastSellPriceUsd()) gates the

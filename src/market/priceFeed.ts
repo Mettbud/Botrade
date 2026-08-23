@@ -20,6 +20,13 @@ export interface PriceFeedEvents {
   error: (err: unknown) => void;
 }
 
+export interface PriceFeedOptions {
+  /** Read at fetch time so a trade completed between ticks is never one tick stale. */
+  hasOpenPosition?: () => boolean;
+  /** Test seam; production reads the mint once from Solana and caches it. */
+  getTokenDecimals?: () => Promise<number>;
+}
+
 /**
  * Polls Jupiter for a matched buy/sell reference quote on a fixed interval,
  * turning it into an executable price sample. Deliberately interval-based
@@ -30,11 +37,14 @@ export class PriceFeed extends EventEmitter {
   private timer: NodeJS.Timeout | undefined;
   private running = false;
   private ticking = false;
+  private immediateTickQueued = false;
   private consecutiveErrors = 0;
+  private sessionGeneration = 0;
   private tokenDecimals: number | undefined;
-  private hasOpenPosition = false;
   private lastRealSpread: number | undefined;
   private lastRealSellImpactBps = 0;
+  private readonly hasOpenPosition: () => boolean;
+  private readonly getTokenDecimals: () => Promise<number>;
 
   constructor(
     private readonly client: JupiterClient,
@@ -43,18 +53,13 @@ export class PriceFeed extends EventEmitter {
     private readonly connection: Connection,
     private readonly tokenMint: PublicKey,
     private readonly logger: Logger,
+    options: PriceFeedOptions = {},
   ) {
     super();
-  }
-
-  /**
-   * Called whenever the bot's position state changes. While flat, the sell
-   * side of each tick is estimated instead of freshly quoted (see
-   * fetchSample) - the instant there's a real position, full real quotes
-   * resume because that's when exit-price accuracy actually matters.
-   */
-  setHasOpenPosition(hasOpenPosition: boolean): void {
-    this.hasOpenPosition = hasOpenPosition;
+    this.hasOpenPosition = options.hasOpenPosition ?? (() => false);
+    this.getTokenDecimals =
+      options.getTokenDecimals ??
+      (() => getMintDecimals(this.connection, this.tokenMint));
   }
 
   start(): void {
@@ -75,12 +80,15 @@ export class PriceFeed extends EventEmitter {
    * the API - an on-chain jump forcing an extra request right through that
    * would make the rate limit worse, not better. The regular (backed-off)
    * schedule still picks it up as soon as it's healthy again.
+   * Returns whether an immediate tick was actually queued.
    */
-  /** Returns whether it actually queued an immediate tick (false = skipped, e.g. mid-backoff). */
   triggerImmediateTick(): boolean {
-    if (!this.running || this.ticking) return false;
+    if (!this.running || this.ticking || this.immediateTickQueued) return false;
     if (this.consecutiveErrors > 0) return false;
-    if (this.timer) clearTimeout(this.timer);
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
     this.scheduleNext(0);
     return true;
   }
@@ -89,9 +97,33 @@ export class PriceFeed extends EventEmitter {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    this.immediateTickQueued = false;
+  }
+
+  /**
+   * Clears every in-memory market signal used by PAPER automation. A quote
+   * already in flight is allowed to finish, but its sample/error is discarded
+   * through the generation check in tick().
+   */
+  resetSession(): void {
+    this.sessionGeneration += 1;
+    this.history.clear();
+    this.consecutiveErrors = 0;
+    this.lastRealSpread = undefined;
+    this.lastRealSellImpactBps = 0;
+  }
+
+  /**
+   * Rare crash-buy preflight. While flat, normal ticks may estimate the sell
+   * side from the last spread; an actual crash signal must recheck a fresh
+   * executable round trip before committing money.
+   */
+  fetchFreshRoundTripSample(): Promise<PriceSample> {
+    return this.fetchSample(true);
   }
 
   private scheduleNext(delayMs: number): void {
+    this.immediateTickQueued = delayMs <= 0;
     this.timer = setTimeout(() => void this.runTick(), delayMs);
   }
 
@@ -101,6 +133,8 @@ export class PriceFeed extends EventEmitter {
   // than a successful one (backoff) instead of firing on a fixed clock.
   private async runTick(): Promise<void> {
     if (!this.running) return;
+    this.timer = undefined;
+    this.immediateTickQueued = false;
     this.ticking = true;
     try {
       await this.tick();
@@ -114,15 +148,22 @@ export class PriceFeed extends EventEmitter {
   }
 
   private async tick(): Promise<void> {
+    const sessionGeneration = this.sessionGeneration;
     try {
       const sample = await this.fetchSample();
+      if (sessionGeneration !== this.sessionGeneration) return;
       this.consecutiveErrors = 0;
+      if (!sample.sellIsEstimated) {
+        this.lastRealSpread = sample.spread;
+        this.lastRealSellImpactBps = sample.priceImpactSellBps;
+      }
       this.history.push(sample);
       this.emit("sample", sample);
 
       const events = detectMovements(this.history, sample, this.config);
       if (events.length > 0) this.emit("movement", events);
     } catch (err) {
+      if (sessionGeneration !== this.sessionGeneration) return;
       this.consecutiveErrors += 1;
       this.logger.warn("price feed tick failed", {
         err: String(err),
@@ -132,12 +173,9 @@ export class PriceFeed extends EventEmitter {
     }
   }
 
-  private async fetchSample(): Promise<PriceSample> {
+  private async fetchSample(forceRealSellQuote = false): Promise<PriceSample> {
     if (this.tokenDecimals === undefined) {
-      this.tokenDecimals = await getMintDecimals(
-        this.connection,
-        this.tokenMint,
-      );
+      this.tokenDecimals = await this.getTokenDecimals();
     }
 
     const solUsdPrice = await this.solPrice.getPrice();
@@ -161,7 +199,10 @@ export class PriceFeed extends EventEmitter {
     // the very first tick, to seed a real spread) - while flat there's
     // nothing to actually sell, so this halves API load in the common
     // case at the cost of an estimated (not fresh-quoted) sell price.
-    const needRealSellQuote = this.hasOpenPosition || this.lastRealSpread === undefined;
+    const needRealSellQuote =
+      forceRealSellQuote ||
+      this.hasOpenPosition() ||
+      this.lastRealSpread === undefined;
 
     if (!needRealSellQuote) {
       return {
@@ -189,8 +230,7 @@ export class PriceFeed extends EventEmitter {
     const sellPriceUsd = (solBackUi * solUsdPrice) / referenceTokenAmountUi;
     const spread = (buyPriceUsd - sellPriceUsd) / buyPriceUsd;
 
-    this.lastRealSpread = spread;
-    this.lastRealSellImpactBps = priceImpactBps(sellQuote);
+    const sellImpactBps = priceImpactBps(sellQuote);
 
     return {
       timestampMs: Date.now(),
@@ -199,7 +239,7 @@ export class PriceFeed extends EventEmitter {
       sellIsEstimated: false,
       spread,
       priceImpactBuyBps: priceImpactBps(buyQuote),
-      priceImpactSellBps: this.lastRealSellImpactBps,
+      priceImpactSellBps: sellImpactBps,
       referenceSolAmount,
       referenceTokenAmountUi,
       solUsdPrice,

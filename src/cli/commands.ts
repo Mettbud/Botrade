@@ -8,7 +8,13 @@ import type { PriceFeed } from "../market/priceFeed.js";
 import { PaperTrader } from "../trading/paperTrader.js";
 import type { PositionManager } from "../trading/positionManager.js";
 import type { TradeExecutor } from "../trading/tradeExecutor.js";
+import type { Trade } from "../trading/types.js";
 import { getMintDecimals } from "../wallet/balances.js";
+
+export interface CrashLotSnapshot {
+  crashLotId: string;
+  tokenAmount: number;
+}
 
 export interface CommandDeps {
   positionManager: PositionManager;
@@ -20,6 +26,10 @@ export interface CommandDeps {
   logger: Logger;
   executor: TradeExecutor;
   onExit: () => void;
+  /** Runs only after PositionManager accepted a PAPER reset. */
+  onPaperReset?: () => void;
+  /** Lets the runtime retain truthful crash-lot UI events for global sells. */
+  onTradeCompleted?: (trade: Trade, crashLotBefore?: CrashLotSnapshot) => void;
 }
 
 /** Wires up interactive stdin commands: buy/sell/panic/status/quit. */
@@ -32,7 +42,7 @@ export function startCommandLoop(deps: CommandDeps): void {
   });
 }
 
-async function handleLine(line: string, deps: CommandDeps): Promise<void> {
+export async function handleLine(line: string, deps: CommandDeps): Promise<void> {
   const [cmd, arg] = line.split(/\s+/);
   const { positionManager, priceFeed, config, logger, executor } = deps;
 
@@ -40,6 +50,7 @@ async function handleLine(line: string, deps: CommandDeps): Promise<void> {
     case "buy": {
       const usdAmount = Number(arg ?? "1");
       const trade = await positionManager.manualBuy(usdAmount);
+      deps.onTradeCompleted?.(trade);
       logger.info(
         `BUY ${trade.tokenAmount.toFixed(4)} ${config.token.symbol} for ~$${trade.usdEstimate.toFixed(4)}`,
       );
@@ -48,7 +59,9 @@ async function handleLine(line: string, deps: CommandDeps): Promise<void> {
     case "sell": {
       const percent = Number(arg ?? "100");
       const impactBps = priceFeed.history.latest()?.priceImpactSellBps ?? 0;
+      const crashLotBefore = snapshotCrashLot(positionManager);
       const trade = await positionManager.manualSell(percent, "MANUAL", impactBps);
+      deps.onTradeCompleted?.(trade, crashLotBefore);
       logger.info(
         `SELL ${trade.tokenAmount.toFixed(4)} ${config.token.symbol} for ~$${trade.usdEstimate.toFixed(4)}`,
       );
@@ -66,8 +79,9 @@ async function handleLine(line: string, deps: CommandDeps): Promise<void> {
       positionManager.reset();
       executor.usdBalance = config.trading.paperBalanceUsd;
       executor.tokenAmount = 0;
+      deps.onPaperReset?.();
       logger.info(
-        `PAPER trade history and position reset - fresh balance $${config.trading.paperBalanceUsd.toFixed(2)}.`,
+        `PAPER session reset - fresh balance $${config.trading.paperBalanceUsd.toFixed(2)}. Configuration is unchanged; restart the bot after editing .env.`,
       );
       return;
     }
@@ -111,8 +125,19 @@ async function runPanic(deps: CommandDeps): Promise<void> {
   }
 
   const impactBps = deps.priceFeed.history.latest()?.priceImpactSellBps ?? 0;
+  const crashLotBefore = snapshotCrashLot(positionManager);
   const trade = await positionManager.panicSell(impactBps);
+  deps.onTradeCompleted?.(trade, crashLotBefore);
   logger.info(
     `PANIC_EXIT sold ${trade.tokenAmount.toFixed(4)} ${config.token.symbol} for ~$${trade.usdEstimate.toFixed(4)}`,
   );
+}
+
+function snapshotCrashLot(
+  positionManager: PositionManager,
+): CrashLotSnapshot | undefined {
+  const lot = positionManager.getActiveCrashLot();
+  return lot
+    ? { crashLotId: lot.crashLotId, tokenAmount: lot.tokenAmount }
+    : undefined;
 }

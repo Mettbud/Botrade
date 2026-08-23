@@ -29,6 +29,13 @@ const boundedNumberFromString = (
 const percentFromString = (fallback: number) =>
   boundedNumberFromString(fallback, 0, 100);
 
+const positivePercentFromString = (fallback: number) =>
+  z
+    .string()
+    .default(String(fallback))
+    .transform((v) => Number(v))
+    .pipe(z.number().finite().positive().max(100));
+
 const positiveMillisecondsFromString = (fallback: number) =>
   z
     .string()
@@ -109,10 +116,9 @@ const rawEnvSchema = z.object({
   MAX_SLIPPAGE_BPS: numFromString(150),
   MAX_PRICE_IMPACT_BPS: numFromString(300),
   // Blocks an automatic TAKE_PROFIT/TRAILING_STOP sell if the current
-  // spread exceeds this. Deliberately does NOT apply to STOP_LOSS or
-  // PANIC_EXIT - getting out of a bad position matters more than the
-  // spread it costs, same reasoning as PANIC_EXIT already bypassing the
-  // price-impact guard.
+  // spread exceeds this. Deliberately does NOT apply to STOP_LOSS,
+  // tranche-aware PROFIT_LOCK or PANIC_EXIT - delaying a safety exit for
+  // spread would defeat its purpose.
   MAX_SPREAD_BPS: numFromString(50),
   // A looser cap used instead of MAX_SPREAD_BPS once the position's
   // unrealized gain exceeds MAX_SPREAD_HIGH_GAIN_THRESHOLD_PERCENT - don't
@@ -132,13 +138,20 @@ const rawEnvSchema = z.object({
 
   TAKE_PROFIT_LEVELS: z.string().default("20:20,40:20,70:100"),
   // "entry" (default): TAKE_PROFIT_LEVELS is a fixed ladder measured from
-  // the original entry price - unchanged legacy behavior. "cascade": ignores
-  // TAKE_PROFIT_LEVELS and instead repeats one rule forever - "+X% from the
-  // last tranche's sell price -> sell Y% of what's left" - so gains keep
-  // compounding with the trend instead of stopping after a fixed 3 levels.
+  // the original entry price. "cascade": uses linear +X% steps from the
+  // frozen entry (+X, +2X, +3X...) and each time sells Y% of the position
+  // captured when that cycle opened. This makes three 20% payouts exactly
+  // 60% of the initial position, rather than 20% of a shrinking remainder.
   TAKE_PROFIT_MODE: z.enum(["entry", "cascade"]).default("entry"),
-  CASCADE_TAKE_PROFIT_PERCENT: numFromString(20),
-  CASCADE_TAKE_PROFIT_SELL_PERCENT: numFromString(20),
+  CASCADE_TAKE_PROFIT_PERCENT: positivePercentFromString(20),
+  CASCADE_TAKE_PROFIT_SELL_PERCENT: positivePercentFromString(20),
+  // Optional floor for the regular (non-crash) remainder. Once this many
+  // cascade payouts completed, a fall back to entry + gain% closes it.
+  CASCADE_PROFIT_LOCK_ENABLED: boolFromString,
+  CASCADE_PROFIT_LOCK_AFTER_TRANCHES: boundedIntegerFromString(3, 1, 100),
+  CASCADE_PROFIT_LOCK_GAIN_PERCENT: percentFromString(8),
+  CASCADE_PROFIT_LOCK_CONFIRMATION_ENABLED: trueByDefaultBoolFromString,
+  CASCADE_PROFIT_LOCK_CONFIRMATION_MS: nonnegativeMillisecondsFromString(4_000),
   STOP_LOSS_PERCENT: numFromString(15),
   TRAILING_STOP_PERCENT: numFromString(12),
   TRAILING_STOP_ACTIVATION_PERCENT: numFromString(0),
@@ -200,7 +213,7 @@ const rawEnvSchema = z.object({
   // to catch a real, rare crash - a $1 nibble wouldn't be worth chasing it for.
   CRASH_BUY_ENABLED: boolFromString,
   CRASH_BUY_DROP_PERCENT: numFromString(20),
-  CRASH_BUY_WINDOW_MS: numFromString(1000),
+  CRASH_BUY_WINDOW_MS: positiveMillisecondsFromString(12_000),
   // Hard USD ceiling for a single crash-buy - a separate, higher cap from
   // MAX_TRADE_USD (which stays the normal per-trade limit everywhere else).
   CRASH_BUY_MAX_USD: numFromString(50),
@@ -208,7 +221,7 @@ const rawEnvSchema = z.object({
   // Exit rule for a crash-buy position: sell in full once price recovers to
   // within this tolerance of the price right before the crash (P0) - i.e.
   // price >= P0 * (1 - tolerance/100). Until then the position just sits
-  // under the normal STOP_LOSS_PERCENT/TRAILING_STOP_PERCENT protection.
+  // in its isolated book under STOP_LOSS_PERCENT/TRAILING_STOP_PERCENT.
   CRASH_BUY_REBOUND_TOLERANCE_PERCENT: numFromString(3),
   // A genuine crash naturally widens spread - too tight a limit would
   // block crash-buy right when it's meant to fire. This ceiling exists to
@@ -216,6 +229,9 @@ const rawEnvSchema = z.object({
   // not normal crash volatility - deliberately looser than everyday
   // trading would tolerate.
   CRASH_BUY_MAX_SPREAD_BPS: numFromString(500),
+  // ACTIVE stays visible until the lot exits. After that, keep the last
+  // crash event on the dashboard for this long so it cannot flash by unseen.
+  CRASH_BUY_STATUS_HOLD_MS: positiveMillisecondsFromString(60_000),
 
   // Off by default. Watches raw pool reserve accounts directly over RPC as
   // a fast "something moved" trigger - never the price a trade is decided
@@ -248,6 +264,34 @@ export function parseRawEnv(env: NodeJS.ProcessEnv): RawEnv {
 
 export function buildConfig(env: NodeJS.ProcessEnv) {
   const raw = parseRawEnv(env);
+
+  if (
+    raw.CRASH_BUY_ENABLED &&
+    raw.CRASH_BUY_WINDOW_MS < raw.PRICE_POLL_INTERVAL_MS
+  ) {
+    throw new Error(
+      "CRASH_BUY_WINDOW_MS must be at least PRICE_POLL_INTERVAL_MS when crash-buy is enabled",
+    );
+  }
+  if (
+    raw.CASCADE_PROFIT_LOCK_ENABLED &&
+    raw.CASCADE_PROFIT_LOCK_AFTER_TRANCHES >
+      Math.ceil(100 / raw.CASCADE_TAKE_PROFIT_SELL_PERCENT)
+  ) {
+    throw new Error(
+      "CASCADE_PROFIT_LOCK_AFTER_TRANCHES cannot exceed the number of configured cascade payouts",
+    );
+  }
+  if (
+    raw.CASCADE_PROFIT_LOCK_ENABLED &&
+    raw.CASCADE_PROFIT_LOCK_GAIN_PERCENT >
+      raw.CASCADE_TAKE_PROFIT_PERCENT *
+        raw.CASCADE_PROFIT_LOCK_AFTER_TRANCHES
+  ) {
+    throw new Error(
+      "CASCADE_PROFIT_LOCK_GAIN_PERCENT cannot exceed the gain reached when the configured activation tranche completes",
+    );
+  }
 
   return {
     wallet: {
@@ -304,6 +348,14 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       takeProfitMode: raw.TAKE_PROFIT_MODE,
       cascadeTakeProfitPercent: raw.CASCADE_TAKE_PROFIT_PERCENT,
       cascadeTakeProfitSellPercent: raw.CASCADE_TAKE_PROFIT_SELL_PERCENT,
+      cascadeProfitLockEnabled: raw.CASCADE_PROFIT_LOCK_ENABLED,
+      cascadeProfitLockAfterTranches:
+        raw.CASCADE_PROFIT_LOCK_AFTER_TRANCHES,
+      cascadeProfitLockGainPercent: raw.CASCADE_PROFIT_LOCK_GAIN_PERCENT,
+      cascadeProfitLockConfirmationEnabled:
+        raw.CASCADE_PROFIT_LOCK_CONFIRMATION_ENABLED,
+      cascadeProfitLockConfirmationMs:
+        raw.CASCADE_PROFIT_LOCK_CONFIRMATION_MS,
       stopLossPercent: raw.STOP_LOSS_PERCENT,
       trailingStopPercent: raw.TRAILING_STOP_PERCENT,
       trailingStopActivationPercent: raw.TRAILING_STOP_ACTIVATION_PERCENT,
@@ -336,6 +388,7 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       portfolioPercent: raw.CRASH_BUY_PORTFOLIO_PERCENT,
       reboundTolerancePercent: raw.CRASH_BUY_REBOUND_TOLERANCE_PERCENT,
       maxSpreadBps: raw.CRASH_BUY_MAX_SPREAD_BPS,
+      statusHoldMs: raw.CRASH_BUY_STATUS_HOLD_MS,
     },
     onchain: {
       watchEnabled: raw.ONCHAIN_WATCH_ENABLED,

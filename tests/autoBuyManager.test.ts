@@ -269,4 +269,37 @@ describe("AutoBuyManager", () => {
     history.push(sample(2_300, 0.41));
     expect(manager.evaluate(history, false, 2_300)).toBe(false); // too soon
   });
+
+  it("reset clears the dip watch, adaptive flags, and previous-buy cooldown", () => {
+    const manager = new AutoBuyManager(enabledConfig({
+      AUTO_BUY_MIN_GAP_MS: "60000",
+    }));
+    const first = new PriceHistoryBuffer();
+    first.push(sample(0, 1));
+    manager.evaluate(first, false, 0);
+    first.push(sample(1_000, 0.4));
+    manager.evaluate(first, false, 1_000);
+    first.push(sample(2_000, 0.41));
+    expect(manager.evaluate(first, false, 2_000)).toBe(true);
+
+    manager.reset();
+
+    expect(manager.status()).toMatchObject({
+      watching: false,
+      dropPercentFromHigh: undefined,
+      effectiveDipPercent: enabledConfig().autoBuy.dipPercent,
+      peakProtectionActive: false,
+      recentRunUpPercent: undefined,
+      volatilityProtectionActive: false,
+      realizedVolatilityPercent: undefined,
+    });
+
+    const fresh = new PriceHistoryBuffer();
+    fresh.push(sample(2_100, 1));
+    manager.evaluate(fresh, false, 2_100);
+    fresh.push(sample(2_200, 0.4));
+    manager.evaluate(fresh, false, 2_200);
+    fresh.push(sample(2_300, 0.41));
+    expect(manager.evaluate(fresh, false, 2_300)).toBe(true);
+  });
 });

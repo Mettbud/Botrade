@@ -95,7 +95,11 @@ export class LiveTrader implements TradeExecutor {
       this.tokenMint,
     );
     const decimals = await getMintDecimals(this.connection, this.tokenMint);
-    const actualTokenOut = actuals ? Number(actuals.tokenDelta) / 10 ** decimals : Number(quote.outAmount) / 10 ** decimals;
+    const observedTokenBought = actuals
+      ? tokenAmountFromSignedDelta(actuals.tokenDelta, decimals, "BUY")
+      : undefined;
+    const actualTokenOut =
+      observedTokenBought ?? Number(quote.outAmount) / 10 ** decimals;
     const actualSolSpent = actuals ? -actuals.solDeltaLamports / 10 ** SOL_DECIMALS : solIn;
 
     return {
@@ -165,13 +169,19 @@ export class LiveTrader implements TradeExecutor {
     const actualSolReceived = actuals
       ? actuals.solDeltaLamports / 10 ** SOL_DECIMALS
       : Number(quote.outAmount) / 10 ** SOL_DECIMALS;
+    const observedTokenSold = actuals
+      ? tokenAmountFromSignedDelta(actuals.tokenDelta, decimals, "SELL")
+      : undefined;
+    const actualTokenSold = observedTokenSold ?? sellAmountUi;
 
     return {
       timestampMs: Date.now(),
       mode: "LIVE",
       side: "SELL",
       reason,
-      tokenAmount: sellAmountUi,
+      // Exact crash-lot accounting must follow the confirmed wallet delta,
+      // not the pre-swap requested amount (partial/rounded fills can differ).
+      tokenAmount: actualTokenSold,
       solAmount: actualSolReceived,
       usdEstimate: actualSolReceived * solUsdPrice,
       quoteBeforeJson: JSON.stringify(quote),
@@ -191,4 +201,22 @@ export class LiveTrader implements TradeExecutor {
     const impactCheck = checkPriceImpact(priceImpactBps, this.config.risk.maxPriceImpactBps);
     if (!impactCheck.allowed) throw new Error(impactCheck.reason);
   }
+}
+
+/**
+ * Converts only a delta whose sign agrees with the requested swap side.
+ * An unexpected/zero delta means transaction analysis was inconclusive and
+ * lets the caller use its existing quote/request fallback instead of turning
+ * an incoming token delta into a fictitious sell (or vice versa).
+ */
+export function tokenAmountFromSignedDelta(
+  tokenDelta: bigint,
+  decimals: number,
+  side: "BUY" | "SELL",
+): number | undefined {
+  const directedRaw = side === "BUY" ? tokenDelta : -tokenDelta;
+  if (directedRaw <= 0n) return undefined;
+
+  const uiAmount = Number(directedRaw) / 10 ** decimals;
+  return Number.isFinite(uiAmount) && uiAmount > 0 ? uiAmount : undefined;
 }

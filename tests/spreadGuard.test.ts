@@ -11,10 +11,16 @@ const config = {
 describe("resolveMaxSpreadBps", () => {
   it("returns undefined (no cap) for STOP_LOSS", () => {
     expect(resolveMaxSpreadBps("STOP_LOSS", 3, config)).toBeUndefined();
+    expect(resolveMaxSpreadBps("REGULAR_STOP_LOSS", -15, config)).toBeUndefined();
+    expect(resolveMaxSpreadBps("CRASH_STOP_LOSS", -15, config)).toBeUndefined();
   });
 
   it("returns undefined (no cap) for PANIC_EXIT", () => {
     expect(resolveMaxSpreadBps("PANIC_EXIT", -50, config)).toBeUndefined();
+  });
+
+  it("returns undefined (no cap) for the tranche-aware PROFIT_LOCK", () => {
+    expect(resolveMaxSpreadBps("PROFIT_LOCK", 8, config)).toBeUndefined();
   });
 
   it("uses the base cap for TAKE_PROFIT below the high-gain threshold", () => {

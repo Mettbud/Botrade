@@ -25,6 +25,7 @@ function enabledConfig(overrides: Record<string, string> = {}) {
     CRASH_BUY_ENABLED: "true",
     CRASH_BUY_DROP_PERCENT: "20",
     CRASH_BUY_WINDOW_MS: "1000",
+    PRICE_POLL_INTERVAL_MS: "100",
     ...overrides,
   } as unknown as NodeJS.ProcessEnv);
 }
@@ -42,7 +43,7 @@ describe("CrashBuyManager", () => {
     expect(manager.evaluate(history, false, 500).shouldBuy).toBe(false);
   });
 
-  it("does not buy while already holding a position", () => {
+  it("does not buy while a crash-buy lot is already active", () => {
     const manager = new CrashBuyManager(enabledConfig());
     const history = new PriceHistoryBuffer();
     history.push(sample(0, 1.0));
@@ -60,7 +61,20 @@ describe("CrashBuyManager", () => {
     const signal = manager.evaluate(history, false, 800);
     expect(signal.shouldBuy).toBe(true);
     expect(signal.preDropPriceUsd).toBe(1.0);
-    expect(manager.getActivePreDropPriceUsd()).toBe(1.0);
+  });
+
+  it("allows a crash signal beside a regular position when no crash lot is active", () => {
+    const manager = new CrashBuyManager(enabledConfig());
+    const history = new PriceHistoryBuffer();
+    history.push(sample(0, 1.0));
+    history.push(sample(800, 0.75));
+
+    // The second argument describes only a dedicated crash-buy lot. A
+    // regular spot position may exist while this value remains false.
+    expect(manager.evaluate(history, false, 800)).toEqual({
+      shouldBuy: true,
+      preDropPriceUsd: 1.0,
+    });
   });
 
   it("does not fire on a drop below the threshold", () => {
@@ -99,15 +113,27 @@ describe("CrashBuyManager", () => {
     expect(manager.evaluate(history, false, 800).shouldBuy).toBe(true);
   });
 
-  it("clearActivePosition resets the tracked pre-drop reference price", () => {
+  it("can reject a stale estimated signal after a fresh spread/price recheck", () => {
+    const manager = new CrashBuyManager(enabledConfig({
+      CRASH_BUY_MAX_SPREAD_BPS: "500",
+    }));
+
+    expect(manager.isSignalStillValid(0.75, 0.04, 1)).toBe(true);
+    expect(manager.isSignalStillValid(0.85, 0.04, 1)).toBe(false);
+    expect(manager.isSignalStillValid(0.75, 0.08, 1)).toBe(false);
+  });
+
+  it("does not claim an active lot before the caller completes the trade", () => {
     const manager = new CrashBuyManager(enabledConfig());
     const history = new PriceHistoryBuffer();
     history.push(sample(0, 1.0));
     history.push(sample(800, 0.75));
-    manager.evaluate(history, false, 800);
-    expect(manager.getActivePreDropPriceUsd()).toBe(1.0);
 
-    manager.clearActivePosition();
-    expect(manager.getActivePreDropPriceUsd()).toBeUndefined();
+    expect(manager.evaluate(history, false, 800).shouldBuy).toBe(true);
+
+    // Until PositionManager reports a successfully opened crash lot, the
+    // detector remains free to emit a retry signal.
+    expect(manager.evaluate(history, false, 801).shouldBuy).toBe(true);
+    expect(manager.evaluate(history, true, 802).shouldBuy).toBe(false);
   });
 });

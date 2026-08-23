@@ -126,4 +126,17 @@ describe("PriceHistoryBuffer", () => {
     // The old sample should have been evicted, so a huge window still finds nothing that old.
     expect(buf.changePercent(20 * 60_000)).toBeUndefined();
   });
+
+  it("clears all rolling signals for a fresh PAPER session", () => {
+    const buf = new PriceHistoryBuffer();
+    buf.push(sample(0, 1));
+    buf.push(sample(1_000, 0.5));
+
+    buf.clear();
+
+    expect(buf.latest()).toBeUndefined();
+    expect(buf.changePercent(10_000)).toBeUndefined();
+    expect(buf.maxPrice(10_000)).toBeUndefined();
+    expect(buf.realizedVolatilityPercent(10_000)).toBeUndefined();
+  });
 });

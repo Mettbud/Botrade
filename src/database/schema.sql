@@ -45,7 +45,24 @@ CREATE TABLE IF NOT EXISTS trades (
   priority_fee_lamports INTEGER,
   tx_signature TEXT,
   realized_pnl_usd REAL,
+  crash_lot_id TEXT,
+  crash_pre_drop_price_usd REAL,
+  cascade_tranches_executed INTEGER,
+  cascade_entry_price_usd REAL,
+  cascade_initial_token_amount REAL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades (timestamp_ms);
+
+-- Strategy runtime state that cannot be reconstructed from fills alone.
+-- `position_key` is "regular" or "crash:<lotId>" and is scoped by mode.
+CREATE TABLE IF NOT EXISTS trailing_states (
+  mode TEXT NOT NULL CHECK (mode IN ('PAPER', 'LIVE')),
+  position_key TEXT NOT NULL,
+  position_identity TEXT NOT NULL,
+  highest_price_usd REAL NOT NULL,
+  armed INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (mode, position_key)
+);

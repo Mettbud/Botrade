@@ -4,7 +4,8 @@ import type { PriceHistoryBuffer } from "../market/history.js";
 export interface CrashBuySignal {
   shouldBuy: boolean;
   /** Price right before the crash (the window's high) - the reference for
-   *  the rebound-exit rule. Only set when shouldBuy is true. */
+   *  the rebound-exit rule. Only set when shouldBuy is true; the caller
+   *  stores it with the crash lot only after the buy succeeds. */
   preDropPriceUsd: number | undefined;
 }
 
@@ -21,17 +22,15 @@ export interface CrashBuySignal {
  * the drop is measured over once samples do land.
  */
 export class CrashBuyManager {
-  private lastBuyAtMs = 0;
-  private activePreDropPriceUsd: number | undefined;
-
   constructor(private readonly config: BotConfig) {}
 
   evaluate(
     history: PriceHistoryBuffer,
-    hasOpenPosition: boolean,
-    nowMs: number,
+    /** Dedicated crash-buy lot, not an unrelated regular position. */
+    hasActiveCrashLot: boolean,
+    _nowMs: number,
   ): CrashBuySignal {
-    if (!this.config.crashBuy.enabled || hasOpenPosition) {
+    if (!this.config.crashBuy.enabled || hasActiveCrashLot) {
       return { shouldBuy: false, preDropPriceUsd: undefined };
     }
 
@@ -43,36 +42,41 @@ export class CrashBuyManager {
       return { shouldBuy: false, preDropPriceUsd: undefined };
     }
 
-    const dropPercent =
-      ((preDropPriceUsd - latest.sellPriceUsd) / preDropPriceUsd) * 100;
-    if (dropPercent < this.config.crashBuy.dropPercent) {
+    if (
+      !this.isSignalStillValid(
+        latest.sellPriceUsd,
+        latest.spread,
+        preDropPriceUsd,
+      )
+    ) {
       return { shouldBuy: false, preDropPriceUsd: undefined };
     }
 
-    // A genuine crash naturally widens spread - CRASH_BUY_MAX_SPREAD_BPS is
-    // deliberately loose (see schema.ts) and only meant to reject the
-    // pathological case (a near-drained/rugged pool), not normal volatility.
-    const spreadBps = latest.spread * 10_000;
-    if (spreadBps > this.config.crashBuy.maxSpreadBps) {
-      return { shouldBuy: false, preDropPriceUsd: undefined };
-    }
-
-    this.lastBuyAtMs = nowMs;
-    this.activePreDropPriceUsd = preDropPriceUsd;
     return { shouldBuy: true, preDropPriceUsd };
   }
 
-  /** P0 for the active crash-buy position's rebound-exit rule, if any. */
-  getActivePreDropPriceUsd(): number | undefined {
-    return this.activePreDropPriceUsd;
-  }
+  /** Rechecks a signal against a forced fresh round-trip quote before buy. */
+  isSignalStillValid(
+    currentSellPriceUsd: number,
+    spreadFraction: number,
+    preDropPriceUsd: number,
+  ): boolean {
+    if (
+      !Number.isFinite(currentSellPriceUsd) ||
+      currentSellPriceUsd <= 0 ||
+      !Number.isFinite(preDropPriceUsd) ||
+      preDropPriceUsd <= 0
+    ) {
+      return false;
+    }
+    const dropPercent =
+      ((preDropPriceUsd - currentSellPriceUsd) / preDropPriceUsd) * 100;
+    if (dropPercent < this.config.crashBuy.dropPercent) return false;
 
-  /** Called once the crash-buy position is fully closed (either exit). */
-  clearActivePosition(): void {
-    this.activePreDropPriceUsd = undefined;
-  }
-
-  getLastBuyAtMs(): number {
-    return this.lastBuyAtMs;
+    // A genuine crash naturally widens spread. This only rejects the
+    // pathological/rugged case and is deliberately looser than normal TP.
+    const spreadBps = spreadFraction * 10_000;
+    return Number.isFinite(spreadBps) &&
+      spreadBps <= this.config.crashBuy.maxSpreadBps;
   }
 }

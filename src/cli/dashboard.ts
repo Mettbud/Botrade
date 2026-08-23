@@ -4,6 +4,71 @@ import type { PriceSample } from "../market/types.js";
 import type { AutoBuyStatus } from "../trading/autoBuyManager.js";
 import { colorize, colors, pct, signColor, usd } from "./format.js";
 
+export interface DashboardEvent {
+  message: string;
+  /** Age is supplied by the caller so formatting stays deterministic in tests. */
+  ageMs: number;
+}
+
+export interface CascadeDashboardStatus {
+  enabled: boolean;
+  completedTranches: number;
+  /** Omit for an unlimited cascade. */
+  maxTranches?: number;
+  /** How much of the position captured when the cascade started was sold. */
+  soldInitialPercent: number;
+  /** Absolute gain from frozen entry required for the next payout. */
+  nextGainPercent?: number;
+  nextTargetPriceUsd?: number;
+  /** Progress between the previous and next linear entry target, from 0 to 100. */
+  nextProgressPercent?: number;
+  lastExecution?: {
+    trancheNumber: number;
+    soldInitialPercent: number;
+    priceUsd: number;
+    /** Total gain from entry at which this tranche was executed, when known. */
+    gainFromEntryPercent?: number;
+    ageMs?: number;
+  };
+}
+
+export interface ProfitLockDashboardStatus {
+  enabled: boolean;
+  armed: boolean;
+  completedTranches?: number;
+  activationTrancheCount: number;
+  floorGainPercent: number;
+  floorPriceUsd?: number;
+}
+
+export type CrashBuyDashboardPhase =
+  | "OFF"
+  | "ARMED"
+  | "PAUSED"
+  | "BUYING"
+  | "ACTIVE"
+  | "RECENT"
+  | "ERROR";
+
+export interface CrashBuyDashboardStatus {
+  phase: CrashBuyDashboardPhase;
+  /** Short explanation for PAUSED/ERROR, or other useful state detail. */
+  detail?: string;
+  activeLot?: {
+    tokenAmount: number;
+    costUsd: number;
+    /** Price immediately before the detected crash. */
+    preDropPriceUsd: number;
+    reboundTargetPriceUsd: number;
+    entryPriceUsd?: number;
+    pnlPercent?: number;
+    stopLossPriceUsd?: number;
+    trailingStopPercent?: number;
+  };
+  /** RECENT can keep this visible after the lot has already been closed. */
+  lastEvent?: DashboardEvent;
+}
+
 export interface DashboardState {
   tokenSymbol: string;
   mode: "PAPER" | "LIVE";
@@ -21,6 +86,9 @@ export interface DashboardState {
   autoBuy: AutoBuyStatus;
   stopLossPercent: number;
   trailingStopPercent: number;
+  cascade?: CascadeDashboardStatus;
+  profitLock?: ProfitLockDashboardStatus;
+  crashBuy?: CrashBuyDashboardStatus;
 }
 
 export function formatDashboard(s: DashboardState): string {
@@ -61,6 +129,16 @@ export function formatDashboard(s: DashboardState): string {
   } else {
     lines.push("Position: none");
     lines.push(formatAutoBuyLine(s.autoBuy));
+  }
+
+  const strategyStatusLines = [
+    ...(s.cascade ? formatCascadeStatusLines(s.cascade) : []),
+    ...(s.profitLock ? formatProfitLockStatusLines(s.profitLock) : []),
+    ...(s.crashBuy ? formatCrashBuyStatusLines(s.crashBuy, s.tokenSymbol) : []),
+  ];
+  if (strategyStatusLines.length > 0) {
+    lines.push("");
+    lines.push(...strategyStatusLines);
   }
 
   lines.push("");
@@ -123,6 +201,140 @@ export function formatStopLossMargin(lossPercent: number): string {
     return `no loss (+${Math.abs(lossPercent).toFixed(2)}% above entry)`;
   }
   return `${lossPercent.toFixed(2)}% loss`;
+}
+
+export function formatDashboardAge(ageMs: number): string {
+  if (!Number.isFinite(ageMs)) return "unknown age";
+  const safeAgeMs = Math.max(0, ageMs);
+  if (safeAgeMs < 1_000) return "now";
+  if (safeAgeMs < 60_000) return `${Math.floor(safeAgeMs / 1_000)}s ago`;
+  if (safeAgeMs < 3_600_000) return `${Math.floor(safeAgeMs / 60_000)}m ago`;
+  if (safeAgeMs < 86_400_000) return `${Math.floor(safeAgeMs / 3_600_000)}h ago`;
+  return `${Math.floor(safeAgeMs / 86_400_000)}d ago`;
+}
+
+export function formatCascadeStatusLines(status: CascadeDashboardStatus): string[] {
+  if (!status.enabled) {
+    return [`Cascade TP: ${colorize("OFF", colors.DIM)}`];
+  }
+
+  const completed = Math.max(0, Math.trunc(status.completedTranches));
+  const max = status.maxTranches === undefined
+    ? undefined
+    : Math.max(0, Math.trunc(status.maxTranches));
+  const count = max === undefined ? `${completed}` : `${completed}/${max}`;
+  const isComplete = max !== undefined && completed >= max;
+  const state = isComplete ? ` ${colorize("COMPLETE", colors.GREEN)}` : "";
+  const lines = [
+    `Cascade TP:${state} ${count} payouts | sold ${formatPlainPercent(status.soldInitialPercent)} of initial`,
+  ];
+
+  if (!isComplete && (
+    status.nextGainPercent !== undefined
+    || status.nextTargetPriceUsd !== undefined
+    || status.nextProgressPercent !== undefined
+  )) {
+    lines.push(
+      `  Next: +${formatPlainPercent(status.nextGainPercent)} @ ${usd(status.nextTargetPriceUsd, 8)} | progress ${formatProgress(status.nextProgressPercent)}`,
+    );
+  }
+
+  if (status.lastExecution) {
+    const execution = status.lastExecution;
+    const gain = execution.gainFromEntryPercent === undefined
+      ? ""
+      : ` (${pct(execution.gainFromEntryPercent)})`;
+    const age = execution.ageMs === undefined
+      ? ""
+      : `, ${formatDashboardAge(execution.ageMs)}`;
+    lines.push(
+      `  Last: #${Math.max(0, Math.trunc(execution.trancheNumber))} sold ${formatPlainPercent(execution.soldInitialPercent)} of initial @ ${usd(execution.priceUsd, 8)}${gain}${age}`,
+    );
+  }
+
+  return lines;
+}
+
+export function formatProfitLockStatusLines(status: ProfitLockDashboardStatus): string[] {
+  if (!status.enabled) {
+    return [`Profit lock: ${colorize("OFF", colors.DIM)}`];
+  }
+
+  const activation = Math.max(0, Math.trunc(status.activationTrancheCount));
+  const completed = Math.max(0, Math.trunc(status.completedTranches ?? 0));
+  const phase = status.armed
+    ? `${colorize("ARMED", colors.GREEN)} after ${activation} payouts`
+    : `${colorize("WAITING", colors.YELLOW)} ${Math.min(completed, activation)}/${activation} payouts`;
+  return [
+    `Profit lock: ${phase} | floor +${formatPlainPercent(status.floorGainPercent)} @ ${usd(status.floorPriceUsd, 8)}`,
+  ];
+}
+
+export function formatCrashBuyStatusLines(
+  status: CrashBuyDashboardStatus,
+  tokenSymbol: string,
+): string[] {
+  const phaseColor = crashPhaseColor(status.phase);
+  const detail = status.detail ? ` - ${status.detail}` : "";
+  const lines = [
+    `Crash-buy: ${colorize(status.phase, phaseColor)}${detail}`,
+  ];
+
+  if (status.activeLot) {
+    const lot = status.activeLot;
+    lines.push(
+      `  Lot: ${formatTokenAmount(lot.tokenAmount)} ${tokenSymbol} | cost ${usd(lot.costUsd, 2)} | P0 ${usd(lot.preDropPriceUsd, 8)} | rebound ${usd(lot.reboundTargetPriceUsd, 8)}`,
+    );
+    if (
+      lot.entryPriceUsd !== undefined ||
+      lot.pnlPercent !== undefined ||
+      lot.stopLossPriceUsd !== undefined ||
+      lot.trailingStopPercent !== undefined
+    ) {
+      lines.push(
+        `  Risk: entry ${usd(lot.entryPriceUsd, 8)} | PnL ${pct(lot.pnlPercent)} | hard stop ${usd(lot.stopLossPriceUsd, 8)} | trailing ${formatPlainPercent(lot.trailingStopPercent)} (isolated)`,
+      );
+    }
+  }
+
+  if (status.lastEvent) {
+    lines.push(
+      `  Last: ${status.lastEvent.message} (${formatDashboardAge(status.lastEvent.ageMs)})`,
+    );
+  }
+
+  return lines;
+}
+
+function crashPhaseColor(phase: CrashBuyDashboardPhase): string {
+  switch (phase) {
+    case "ACTIVE":
+    case "RECENT":
+      return colors.GREEN;
+    case "ARMED":
+    case "BUYING":
+    case "PAUSED":
+      return colors.YELLOW;
+    case "ERROR":
+      return colors.RED;
+    case "OFF":
+      return colors.DIM;
+  }
+}
+
+function formatPlainPercent(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "-";
+  return `${value.toFixed(2)}%`;
+}
+
+function formatProgress(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "-";
+  return `${Math.min(100, Math.max(0, value)).toFixed(1)}%`;
+}
+
+function formatTokenAmount(value: number): string {
+  if (!Number.isFinite(value)) return "-";
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
 }
 
 function formatAutoBuyLine(status: AutoBuyStatus): string {

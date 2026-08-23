@@ -6,12 +6,16 @@ const INSERT_SQL = `
     timestamp_ms, mode, side, reason, token_amount, sol_amount, usd_estimate,
     quote_before_json, expected_output, actual_output, slippage_bps,
     price_impact_pct, network_fee_lamports, priority_fee_lamports,
-    tx_signature, realized_pnl_usd
+    tx_signature, realized_pnl_usd, crash_lot_id, crash_pre_drop_price_usd,
+    cascade_tranches_executed, cascade_entry_price_usd,
+    cascade_initial_token_amount
   ) VALUES (
     @timestampMs, @mode, @side, @reason, @tokenAmount, @solAmount, @usdEstimate,
     @quoteBeforeJson, @expectedOutput, @actualOutput, @slippageBps,
     @priceImpactPct, @networkFeeLamports, @priorityFeeLamports,
-    @txSignature, @realizedPnlUsd
+    @txSignature, @realizedPnlUsd, @crashLotId, @crashPreDropPriceUsd,
+    @cascadeTranchesExecuted, @cascadeEntryPriceUsd,
+    @cascadeInitialTokenAmount
   )
 `;
 
@@ -33,6 +37,11 @@ interface TradeRowRaw {
   priority_fee_lamports: number | null;
   tx_signature: string | null;
   realized_pnl_usd: number | null;
+  crash_lot_id: string | null;
+  crash_pre_drop_price_usd: number | null;
+  cascade_tranches_executed: number | null;
+  cascade_entry_price_usd: number | null;
+  cascade_initial_token_amount: number | null;
   created_at: string;
 }
 
@@ -43,7 +52,7 @@ export class TradesRepo {
   constructor(private readonly db: Db) {
     this.insertStmt = db.prepare(INSERT_SQL);
     this.selectAllStmt = db.prepare(
-      "SELECT * FROM trades ORDER BY timestamp_ms ASC",
+      "SELECT * FROM trades ORDER BY timestamp_ms ASC, id ASC",
     );
   }
 
@@ -65,6 +74,11 @@ export class TradesRepo {
       priorityFeeLamports: trade.priorityFeeLamports ?? null,
       txSignature: trade.txSignature ?? null,
       realizedPnlUsd: trade.realizedPnlUsd ?? null,
+      crashLotId: trade.crashLotId ?? null,
+      crashPreDropPriceUsd: trade.crashPreDropPriceUsd ?? null,
+      cascadeTranchesExecuted: trade.cascadeTranchesExecuted ?? null,
+      cascadeEntryPriceUsd: trade.cascadeEntryPriceUsd ?? null,
+      cascadeInitialTokenAmount: trade.cascadeInitialTokenAmount ?? null,
     });
     return Number(info.lastInsertRowid);
   }
@@ -100,6 +114,11 @@ function fromRaw(row: TradeRowRaw): TradeRow {
     priorityFeeLamports: row.priority_fee_lamports ?? undefined,
     txSignature: row.tx_signature ?? undefined,
     realizedPnlUsd: row.realized_pnl_usd ?? undefined,
+    crashLotId: row.crash_lot_id ?? undefined,
+    crashPreDropPriceUsd: row.crash_pre_drop_price_usd ?? undefined,
+    cascadeTranchesExecuted: row.cascade_tranches_executed ?? undefined,
+    cascadeEntryPriceUsd: row.cascade_entry_price_usd ?? undefined,
+    cascadeInitialTokenAmount: row.cascade_initial_token_amount ?? undefined,
     createdAt: row.created_at,
   };
 }

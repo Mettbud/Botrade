@@ -14,6 +14,11 @@ const MAX_AGE_MS = 10 * 60_000;
 export class PriceHistoryBuffer {
   private samples: PriceSample[] = [];
 
+  /** Starts a new in-memory strategy session without touching SQLite history. */
+  clear(): void {
+    this.samples = [];
+  }
+
   push(sample: PriceSample): void {
     this.samples.push(sample);
     const cutoff = sample.timestampMs - MAX_AGE_MS;
