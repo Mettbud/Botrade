@@ -61,6 +61,16 @@ export function checkPriceImpact(
   return { allowed: true };
 }
 
+export function checkSpread(spreadBps: number, maxSpreadBps: number): RiskCheck {
+  if (spreadBps > maxSpreadBps) {
+    return {
+      allowed: false,
+      reason: `TRADE BLOCKED – spread too wide (${(spreadBps / 100).toFixed(2)}% > ${(maxSpreadBps / 100).toFixed(2)}%)`,
+    };
+  }
+  return { allowed: true };
+}
+
 /** Runs every applicable guard and returns the first failure, if any. */
 export function evaluateTradeRisk(checks: RiskCheck[]): RiskCheck {
   return checks.find((c) => !c.allowed) ?? { allowed: true };

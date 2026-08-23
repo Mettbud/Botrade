@@ -123,6 +123,56 @@ describe("PositionManager - cascade take-profit", () => {
   });
 });
 
+describe("PositionManager - spread guard", () => {
+  it("blocks a TAKE_PROFIT sell when spread exceeds MAX_SPREAD_BPS", async () => {
+    const { positionManager, executor } = setup({
+      TAKE_PROFIT_MODE: "cascade",
+      CASCADE_TAKE_PROFIT_PERCENT: "20",
+      CASCADE_TAKE_PROFIT_SELL_PERCENT: "20",
+      MAX_SPREAD_BPS: "50", // 0.5%
+    });
+    executor.price = 1;
+    await positionManager.manualBuy(100);
+
+    executor.price = 1.2; // +20%, would normally fire the cascade tranche
+    await positionManager.handlePriceSample(1.2, 0, Date.now(), 0.02); // 2% spread - over the 0.5% cap
+
+    expect(positionManager.getCostBasis().tokenAmount).toBeCloseTo(100, 6); // unchanged - blocked
+  });
+
+  it("still executes a STOP_LOSS sell even when spread exceeds MAX_SPREAD_BPS", async () => {
+    const { positionManager, executor } = setup({
+      STOP_LOSS_PERCENT: "10",
+      MAX_SPREAD_BPS: "50",
+    });
+    executor.price = 1;
+    await positionManager.manualBuy(100);
+
+    executor.price = 0.85; // -15%, triggers the 10% stop loss
+    await positionManager.handlePriceSample(0.85, 0, Date.now(), 0.05); // 5% spread - way over the cap
+
+    expect(positionManager.getCostBasis().tokenAmount).toBe(0); // sold anyway - STOP_LOSS bypasses the spread guard
+  });
+
+  it("allows a TAKE_PROFIT sell above the high-gain threshold using the looser cap", async () => {
+    const { positionManager, executor } = setup({
+      TAKE_PROFIT_MODE: "cascade",
+      CASCADE_TAKE_PROFIT_PERCENT: "20",
+      CASCADE_TAKE_PROFIT_SELL_PERCENT: "20",
+      MAX_SPREAD_BPS: "50", // 0.5%
+      MAX_SPREAD_HIGH_GAIN_BPS: "200", // 2%
+      MAX_SPREAD_HIGH_GAIN_THRESHOLD_PERCENT: "10",
+    });
+    executor.price = 1;
+    await positionManager.manualBuy(100);
+
+    executor.price = 1.2; // +20% unrealized gain - above the 10% high-gain threshold
+    await positionManager.handlePriceSample(1.2, 0, Date.now(), 0.015); // 1.5% spread - over base cap, under the 2% high-gain cap
+
+    expect(positionManager.getCostBasis().tokenAmount).toBeCloseTo(80, 6); // sold - looser cap applied
+  });
+});
+
 describe("PositionManager - reset", () => {
   it("wipes trade history and in-memory state back to a fresh position", async () => {
     const { positionManager, executor, tradesRepo } = setup();

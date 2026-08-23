@@ -80,6 +80,15 @@ Open `.env.example`, read every line, then fill in `.env`. Key fields:
   with `TRADE BLOCKED – price impact too high` — including automatic stop
   loss, trailing stop and take profit sells. The only bypass is `panic`
   (see below), and even that still prints the quote first.
+- **Spread guard.** A separate, tighter check for automatic
+  TAKE_PROFIT/TRAILING_STOP sells: blocked if spread exceeds
+  `MAX_SPREAD_BPS` (default 0.5%), or `MAX_SPREAD_HIGH_GAIN_BPS` (default
+  1%) once the position's unrealized gain clears
+  `MAX_SPREAD_HIGH_GAIN_THRESHOLD_PERCENT` (default 10%) - don't block
+  locking in a big win over a slightly wider spread. Deliberately does
+  **not** apply to `STOP_LOSS`/`PANIC_EXIT` - getting out of a bad position
+  matters more than the spread it costs, same reasoning as `panic` already
+  bypassing the price-impact guard.
 - **Wick protection.** `STOP_CONFIRMATION_MS` requires a stop-loss/trailing-
   stop trigger to hold continuously for that long before it's acted on, so
   one fast wick doesn't force a sell. Set `STOP_CONFIRMATION_ENABLED=false`

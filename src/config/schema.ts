@@ -55,6 +55,17 @@ const rawEnvSchema = z.object({
 
   MAX_SLIPPAGE_BPS: numFromString(150),
   MAX_PRICE_IMPACT_BPS: numFromString(300),
+  // Blocks an automatic TAKE_PROFIT/TRAILING_STOP sell if the current
+  // spread exceeds this. Deliberately does NOT apply to STOP_LOSS or
+  // PANIC_EXIT - getting out of a bad position matters more than the
+  // spread it costs, same reasoning as PANIC_EXIT already bypassing the
+  // price-impact guard.
+  MAX_SPREAD_BPS: numFromString(50),
+  // A looser cap used instead of MAX_SPREAD_BPS once the position's
+  // unrealized gain exceeds MAX_SPREAD_HIGH_GAIN_THRESHOLD_PERCENT - don't
+  // block locking in a big win over a slightly wider spread.
+  MAX_SPREAD_HIGH_GAIN_BPS: numFromString(100),
+  MAX_SPREAD_HIGH_GAIN_THRESHOLD_PERCENT: numFromString(10),
 
   PRICE_POLL_INTERVAL_MS: numFromString(2000),
   PRICE_REFERENCE_SOL_AMOUNT: numFromString(0.01),
@@ -202,6 +213,9 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     risk: {
       maxSlippageBps: raw.MAX_SLIPPAGE_BPS,
       maxPriceImpactBps: raw.MAX_PRICE_IMPACT_BPS,
+      maxSpreadBps: raw.MAX_SPREAD_BPS,
+      maxSpreadHighGainBps: raw.MAX_SPREAD_HIGH_GAIN_BPS,
+      maxSpreadHighGainThresholdPercent: raw.MAX_SPREAD_HIGH_GAIN_THRESHOLD_PERCENT,
     },
     price: {
       pollIntervalMs: raw.PRICE_POLL_INTERVAL_MS,

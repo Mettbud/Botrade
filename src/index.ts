@@ -102,6 +102,7 @@ async function main(): Promise<void> {
       sample.sellPriceUsd,
       sample.priceImpactSellBps,
       sample.timestampMs,
+      sample.spread,
     );
 
     if (

@@ -10,7 +10,8 @@ import {
 import { TriggerConfirmation } from "../strategy/confirmation.js";
 import { evaluatePosition, type PositionEvaluation } from "../strategy/evaluatePosition.js";
 import { initTrailingStop, type TrailingStopState } from "../strategy/trailingStop.js";
-import { checkPriceImpact } from "./riskGuards.js";
+import { checkPriceImpact, checkSpread } from "./riskGuards.js";
+import { resolveMaxSpreadBps } from "./spreadGuard.js";
 import type { TradeExecutor } from "./tradeExecutor.js";
 import type { Trade, TradeReason } from "./types.js";
 
@@ -99,6 +100,8 @@ export class PositionManager {
     sellPriceUsd: number,
     sellImpactBps: number,
     nowMs: number,
+    /** Fraction form (e.g. 0.005 = 0.5%), same units as PriceSample.spread. */
+    spreadFraction = 0,
   ): Promise<void> {
     if (this.costBasis.tokenAmount <= 0) return;
 
@@ -120,16 +123,20 @@ export class PositionManager {
       evaluation.trailing.triggered,
       nowMs,
     );
+    const spreadBps = spreadFraction * 10_000;
+    const gainPercent = evaluation.unrealized?.percent;
 
     if (confirmedStopLoss) {
-      await this.autoSell(100, "STOP_LOSS", sellImpactBps);
+      await this.autoSell(100, "STOP_LOSS", sellImpactBps, spreadBps, gainPercent);
     } else if (confirmedTrailing) {
-      await this.autoSell(100, "TRAILING_STOP", sellImpactBps);
+      await this.autoSell(100, "TRAILING_STOP", sellImpactBps, spreadBps, gainPercent);
     } else if (evaluation.cascadeTakeProfit) {
       await this.autoSell(
         evaluation.cascadeTakeProfit.sellPercent,
         "TAKE_PROFIT",
         sellImpactBps,
+        spreadBps,
+        gainPercent,
       );
     } else if (evaluation.dueTakeProfitLevels.length > 0) {
       const level = evaluation.dueTakeProfitLevels[0]!;
@@ -137,6 +144,8 @@ export class PositionManager {
         level.sellPercent,
         "TAKE_PROFIT",
         sellImpactBps,
+        spreadBps,
+        gainPercent,
         level.gainPercent,
       );
     }
@@ -196,6 +205,8 @@ export class PositionManager {
     percentOfPosition: number,
     reason: TradeReason,
     currentImpactBps: number,
+    currentSpreadBps: number,
+    unrealizedGainPercent: number | undefined,
     takeProfitGainLevel?: number,
   ): Promise<void> {
     const guard = checkPriceImpact(
@@ -208,6 +219,22 @@ export class PositionManager {
         this.lastBlockedLogMs = Date.now();
       }
       return;
+    }
+
+    const maxSpreadBps = resolveMaxSpreadBps(reason, unrealizedGainPercent, {
+      maxSpreadBps: this.config.risk.maxSpreadBps,
+      maxSpreadHighGainBps: this.config.risk.maxSpreadHighGainBps,
+      maxSpreadHighGainThresholdPercent: this.config.risk.maxSpreadHighGainThresholdPercent,
+    });
+    if (maxSpreadBps !== undefined) {
+      const spreadGuard = checkSpread(currentSpreadBps, maxSpreadBps);
+      if (!spreadGuard.allowed) {
+        if (Date.now() - this.lastBlockedLogMs > 10_000) {
+          this.logger.warn(`${spreadGuard.reason} (${reason} held back)`);
+          this.lastBlockedLogMs = Date.now();
+        }
+        return;
+      }
     }
 
     const tokenAmount = this.costBasis.tokenAmount * (percentOfPosition / 100);
