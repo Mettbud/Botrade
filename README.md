@@ -135,14 +135,25 @@ extreme wick down that immediately bounces.
 transparent rule, not a prediction - there is no way for the bot (or
 anyone) to know in advance whether a given drop is "the" dip or the start
 of a bigger fall. It will buy into drops that keep falling. It only ever
-buys while the bot has no open position, and every buy still goes through
-`MAX_TRADE_USD` - but the entry decision itself carries real risk that
-`STOP_LOSS_PERCENT` limits, it doesn't remove. Test it in paper mode for a
-good while, watching how often the "rebound" was real vs. a dead cat
-bounce, before ever pairing it with live trading.
+buys while the bot has no open position - but the entry decision itself
+carries real risk that `STOP_LOSS_PERCENT` limits, it doesn't remove. Test
+it in paper mode for a good while, watching how often the "rebound" was
+real vs. a dead cat bounce, before ever pairing it with live trading.
 
 The dashboard shows `Auto-buy: OFF` / `ON, watching for a dip (...)` /
 `WATCHING for rebound (...)` so you can see what state it's in at a glance.
+
+**Position sizing differs by mode, on purpose.** In LIVE, every auto-buy is
+exactly `MAX_TRADE_USD` - always, no exceptions, that cap is never raised
+by anything in this section. In PAPER, auto-buys instead spend
+`PAPER_POSITION_SIZE_PERCENT`% of the *current* paper balance (default
+5%), so a $100 paper pool actually compounds/shrinks across many trades
+instead of always trading the same $1 - deliberately not capped by
+`MAX_TRADE_USD`, since paper trades risk nothing real. This means paper
+results at the default settings preview the *strategy*, not the exact
+dollar amounts LIVE will use - if you want paper to also preview LIVE's
+sizing 1:1, set `PAPER_POSITION_SIZE_PERCENT` so that percent of your
+paper balance equals `MAX_TRADE_USD`.
 
 ### Optional: on-chain pool watch (faster detection, off by default)
 

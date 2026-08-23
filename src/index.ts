@@ -14,6 +14,7 @@ import { SolPriceTracker } from "./market/solPrice.js";
 import { PoolWatcher, type WatchedPool } from "./onchain/poolWatcher.js";
 import { getConnection } from "./solana/connection.js";
 import { AutoBuyManager } from "./trading/autoBuyManager.js";
+import { resolveAutoBuySizeUsd } from "./trading/autoBuySize.js";
 import { LiveTrader } from "./trading/liveTrader.js";
 import { PaperTrader } from "./trading/paperTrader.js";
 import { PositionManager } from "./trading/positionManager.js";
@@ -100,11 +101,15 @@ async function main(): Promise<void> {
         sample.timestampMs,
       )
     ) {
-      logger.info(
-        `AUTO_BUY: dip rebound detected, buying $${config.trading.maxTradeUsd}`,
+      const sizeUsd = resolveAutoBuySizeUsd(
+        executor.mode,
+        executor instanceof PaperTrader ? executor.usdBalance : 0,
+        config.trading.maxTradeUsd,
+        config.trading.paperPositionSizePercent,
       );
+      logger.info(`AUTO_BUY: dip rebound detected, buying $${sizeUsd.toFixed(2)}`);
       positionManager
-        .manualBuy(config.trading.maxTradeUsd, "AUTO_BUY")
+        .manualBuy(sizeUsd, "AUTO_BUY")
         .catch((err) =>
           logger.error("AUTO_BUY failed", { err: String(err) }),
         );

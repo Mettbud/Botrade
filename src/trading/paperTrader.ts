@@ -5,7 +5,6 @@ import type { JupiterClient } from "../jupiter/client.js";
 import { getQuote } from "../jupiter/quote.js";
 import type { SolPriceTracker } from "../market/solPrice.js";
 import { getMintDecimals } from "../wallet/balances.js";
-import { checkMaxTradeSize } from "./riskGuards.js";
 import type { BuyParams, SellParams, TradeExecutor } from "./tradeExecutor.js";
 import type { Trade } from "./types.js";
 
@@ -30,9 +29,12 @@ export class PaperTrader implements TradeExecutor {
     public tokenAmount: number,
   ) {}
 
+  // No MAX_TRADE_USD check here on purpose: that guard exists to cap real
+  // money at risk, and paper trades never touch real money. Enforcing it
+  // here would also cap what paper mode can ever teach you about sizing
+  // relative to a larger balance. LiveTrader.buy() still enforces it
+  // unconditionally - this asymmetry is intentional, not an oversight.
   async buy({ usdAmount, reason }: BuyParams): Promise<Trade> {
-    const sizeCheck = checkMaxTradeSize(usdAmount, this.config.trading.maxTradeUsd);
-    if (!sizeCheck.allowed) throw new Error(sizeCheck.reason);
     if (usdAmount > this.usdBalance) {
       throw new Error(
         `Paper balance $${this.usdBalance.toFixed(2)} is less than requested $${usdAmount}`,

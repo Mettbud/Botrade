@@ -47,6 +47,10 @@ const rawEnvSchema = z.object({
   MAX_TRADE_USD: numFromString(1),
   MIN_SOL_RESERVE: numFromString(0.05),
   PAPER_BALANCE_USD: numFromString(100),
+  // Auto-buy sizing in PAPER mode only: percent of the current paper
+  // balance to spend per auto-buy. Never applies to LIVE - live auto-buys
+  // always use MAX_TRADE_USD, no matter what this is set to.
+  PAPER_POSITION_SIZE_PERCENT: numFromString(5),
 
   MAX_SLIPPAGE_BPS: numFromString(150),
   MAX_PRICE_IMPACT_BPS: numFromString(300),
@@ -137,6 +141,7 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       maxTradeUsd: raw.MAX_TRADE_USD,
       minSolReserve: raw.MIN_SOL_RESERVE,
       paperBalanceUsd: raw.PAPER_BALANCE_USD,
+      paperPositionSizePercent: raw.PAPER_POSITION_SIZE_PERCENT,
     },
     risk: {
       maxSlippageBps: raw.MAX_SLIPPAGE_BPS,
