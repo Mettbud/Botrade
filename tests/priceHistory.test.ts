@@ -1,0 +1,52 @@
+import { describe, expect, it } from "vitest";
+import { PriceHistoryBuffer } from "../src/market/history.js";
+import type { PriceSample } from "../src/market/types.js";
+
+function sample(timestampMs: number, sellPriceUsd: number): PriceSample {
+  return {
+    timestampMs,
+    buyPriceUsd: sellPriceUsd * 1.02,
+    sellPriceUsd,
+    spread: 0.02,
+    priceImpactBuyBps: 10,
+    priceImpactSellBps: 10,
+    referenceSolAmount: 0.01,
+    referenceTokenAmountUi: 100,
+    solUsdPrice: 150,
+  };
+}
+
+describe("PriceHistoryBuffer", () => {
+  it("computes % change over a window from the oldest in-window sample", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 1_000_000;
+    buf.push(sample(t0, 1.0));
+    buf.push(sample(t0 + 5_000, 1.05));
+    buf.push(sample(t0 + 10_000, 1.1)); // +10% over the 10s window from t0
+
+    expect(buf.changePercent(10_000)).toBeCloseTo(10, 6);
+  });
+
+  it("detects a negative change (dump)", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 2_000_000;
+    buf.push(sample(t0, 1.0));
+    buf.push(sample(t0 + 10_000, 0.9)); // -10%
+
+    expect(buf.changePercent(30_000)).toBeCloseTo(-10, 6);
+  });
+
+  it("returns undefined when there is no sample old enough for the window", () => {
+    const buf = new PriceHistoryBuffer();
+    buf.push(sample(3_000_000, 1.0));
+    expect(buf.changePercent(60_000)).toBeUndefined();
+  });
+
+  it("evicts samples older than the retention window", () => {
+    const buf = new PriceHistoryBuffer();
+    buf.push(sample(0, 1.0));
+    buf.push(sample(11 * 60_000, 1.5)); // 11 minutes later, beyond MAX_AGE
+    // The old sample should have been evicted, so a huge window still finds nothing that old.
+    expect(buf.changePercent(20 * 60_000)).toBeUndefined();
+  });
+});

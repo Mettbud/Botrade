@@ -1,0 +1,34 @@
+{
+  "name": "cyberleek-bot",
+  "version": "0.1.0",
+  "description": "Local Solana trading bot for CYBERLEEK (SOL/WSOL pair) with paper and live trading modes.",
+  "type": "module",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "bot": "tsx src/index.ts",
+    "roundtrip": "tsx scripts/roundtripTest.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/database && cp src/database/schema.sql dist/database/schema.sql"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.4",
+    "better-sqlite3": "^11.10.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
