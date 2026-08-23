@@ -3,6 +3,9 @@ CREATE TABLE IF NOT EXISTS price_history (
   timestamp_ms INTEGER NOT NULL,
   buy_price_usd REAL NOT NULL,
   sell_price_usd REAL NOT NULL,
+  -- true when sell_price_usd/price_impact_sell_bps are estimated from the
+  -- last real spread (only happens while flat) rather than freshly quoted.
+  sell_is_estimated INTEGER NOT NULL DEFAULT 0,
   spread REAL NOT NULL,
   price_impact_buy_bps REAL NOT NULL,
   price_impact_sell_bps REAL NOT NULL,

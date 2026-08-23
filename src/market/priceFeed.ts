@@ -8,6 +8,7 @@ import { getMintDecimals } from "../wallet/balances.js";
 import { nextPollDelayMs } from "./backoff.js";
 import { PriceHistoryBuffer } from "./history.js";
 import { detectMovements, type MovementEvent } from "./movementDetector.js";
+import { estimateSellPriceUsd } from "./sellEstimate.js";
 import type { SolPriceTracker } from "./solPrice.js";
 import type { PriceSample } from "./types.js";
 
@@ -30,6 +31,9 @@ export class PriceFeed extends EventEmitter {
   private running = false;
   private consecutiveErrors = 0;
   private tokenDecimals: number | undefined;
+  private hasOpenPosition = false;
+  private lastRealSpread: number | undefined;
+  private lastRealSellImpactBps = 0;
 
   constructor(
     private readonly client: JupiterClient,
@@ -40,6 +44,16 @@ export class PriceFeed extends EventEmitter {
     private readonly logger: Logger,
   ) {
     super();
+  }
+
+  /**
+   * Called whenever the bot's position state changes. While flat, the sell
+   * side of each tick is estimated instead of freshly quoted (see
+   * fetchSample) - the instant there's a real position, full real quotes
+   * resume because that's when exit-price accuracy actually matters.
+   */
+  setHasOpenPosition(hasOpenPosition: boolean): void {
+    this.hasOpenPosition = hasOpenPosition;
   }
 
   start(): void {
@@ -112,6 +126,29 @@ export class PriceFeed extends EventEmitter {
     const tokenOutRaw = BigInt(buyQuote.outAmount);
     const referenceTokenAmountUi =
       Number(tokenOutRaw) / 10 ** this.tokenDecimals;
+    const buyPriceUsd =
+      (referenceSolAmount * solUsdPrice) / referenceTokenAmountUi;
+
+    // Only fetch a real sell-side quote while holding a position (or on
+    // the very first tick, to seed a real spread) - while flat there's
+    // nothing to actually sell, so this halves API load in the common
+    // case at the cost of an estimated (not fresh-quoted) sell price.
+    const needRealSellQuote = this.hasOpenPosition || this.lastRealSpread === undefined;
+
+    if (!needRealSellQuote) {
+      return {
+        timestampMs: Date.now(),
+        buyPriceUsd,
+        sellPriceUsd: estimateSellPriceUsd(buyPriceUsd, this.lastRealSpread!),
+        sellIsEstimated: true,
+        spread: this.lastRealSpread!,
+        priceImpactBuyBps: priceImpactBps(buyQuote),
+        priceImpactSellBps: this.lastRealSellImpactBps,
+        referenceSolAmount,
+        referenceTokenAmountUi,
+        solUsdPrice,
+      };
+    }
 
     const sellQuote = await getQuote(this.client, {
       inputMint: this.config.token.mint,
@@ -121,19 +158,20 @@ export class PriceFeed extends EventEmitter {
     });
 
     const solBackUi = Number(sellQuote.outAmount) / 10 ** SOL_DECIMALS;
-
-    const buyPriceUsd =
-      (referenceSolAmount * solUsdPrice) / referenceTokenAmountUi;
     const sellPriceUsd = (solBackUi * solUsdPrice) / referenceTokenAmountUi;
     const spread = (buyPriceUsd - sellPriceUsd) / buyPriceUsd;
+
+    this.lastRealSpread = spread;
+    this.lastRealSellImpactBps = priceImpactBps(sellQuote);
 
     return {
       timestampMs: Date.now(),
       buyPriceUsd,
       sellPriceUsd,
+      sellIsEstimated: false,
       spread,
       priceImpactBuyBps: priceImpactBps(buyQuote),
-      priceImpactSellBps: priceImpactBps(sellQuote),
+      priceImpactSellBps: this.lastRealSellImpactBps,
       referenceSolAmount,
       referenceTokenAmountUi,
       solUsdPrice,

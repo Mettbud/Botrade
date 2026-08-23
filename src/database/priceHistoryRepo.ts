@@ -11,11 +11,11 @@ export interface PriceChanges {
 
 const INSERT_SQL = `
   INSERT INTO price_history (
-    timestamp_ms, buy_price_usd, sell_price_usd, spread,
+    timestamp_ms, buy_price_usd, sell_price_usd, sell_is_estimated, spread,
     price_impact_buy_bps, price_impact_sell_bps, sol_usd_price,
     change_5s, change_15s, change_30s, change_1m, change_5m
   ) VALUES (
-    @timestampMs, @buyPriceUsd, @sellPriceUsd, @spread,
+    @timestampMs, @buyPriceUsd, @sellPriceUsd, @sellIsEstimated, @spread,
     @priceImpactBuyBps, @priceImpactSellBps, @solUsdPrice,
     @change5s, @change15s, @change30s, @change1m, @change5m
   )
@@ -33,6 +33,7 @@ export class PriceHistoryRepo {
       timestampMs: sample.timestampMs,
       buyPriceUsd: sample.buyPriceUsd,
       sellPriceUsd: sample.sellPriceUsd,
+      sellIsEstimated: sample.sellIsEstimated ? 1 : 0,
       spread: sample.spread,
       priceImpactBuyBps: sample.priceImpactBuyBps,
       priceImpactSellBps: sample.priceImpactSellBps,

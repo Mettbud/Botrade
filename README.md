@@ -202,7 +202,14 @@ but the real fix is a free API key from https://portal.jup.ag pasted into
 `JUPITER_API_KEY` - it switches the bot from the shared free tier
 (`lite-api.jup.ag`) to the keyed one (`api.jup.ag`) with a much higher
 limit, at no cost. `PRICE_POLL_INTERVAL_MS` below ~1000ms will still find
-that limit eventually since every tick is 2 requests.
+that limit eventually since every tick is normally 2 requests (buy + sell
+quote) - **except** while the bot has no open position, where it only
+fetches the buy quote and estimates the sell price from the last known
+spread (roughly halving API load in the common "watching, not holding"
+case). The dashboard marks an estimated sell price with `(est., not
+live-quoted while flat)`; the instant a position opens, both sides go back
+to real, freshly-quoted prices, since that's when exit-price accuracy on
+stop loss / trailing stop / take profit actually matters.
 
 ## Data storage
 

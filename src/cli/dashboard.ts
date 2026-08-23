@@ -29,7 +29,10 @@ export function formatDashboard(s: DashboardState): string {
 
   lines.push(`${colors.BOLD}${s.tokenSymbol}${colors.RESET}`);
   lines.push(`Price (buy):  ${usd(s.sample?.buyPriceUsd, 8)}`);
-  lines.push(`Price (sell): ${usd(s.sample?.sellPriceUsd, 8)}`);
+  const sellEstimateNote = s.sample?.sellIsEstimated
+    ? colorize(" (est., not live-quoted while flat)", colors.DIM)
+    : "";
+  lines.push(`Price (sell): ${usd(s.sample?.sellPriceUsd, 8)}${sellEstimateNote}`);
   lines.push("");
 
   if (s.costBasis.tokenAmount > 0 && s.evaluation) {

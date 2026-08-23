@@ -9,6 +9,7 @@ function sample(timestampMs: number, sellPriceUsd: number): PriceSample {
     timestampMs,
     buyPriceUsd: sellPriceUsd,
     sellPriceUsd,
+    sellIsEstimated: false,
     spread: 0,
     priceImpactBuyBps: 10,
     priceImpactSellBps: 10,

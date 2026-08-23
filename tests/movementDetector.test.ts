@@ -18,6 +18,7 @@ function sample(timestampMs: number, sellPriceUsd: number, impactBps = 10): Pric
     timestampMs,
     buyPriceUsd: sellPriceUsd,
     sellPriceUsd,
+    sellIsEstimated: false,
     spread: 0,
     priceImpactBuyBps: impactBps,
     priceImpactSellBps: impactBps,

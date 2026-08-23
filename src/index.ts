@@ -75,6 +75,10 @@ async function main(): Promise<void> {
   });
   priceFeed.on("sample", (sample) => {
     lastErrorMessage = undefined; // connectivity recovered
+    // Decides whether the *next* tick fetches a real sell quote or an
+    // estimate - reflecting current state here is fine since it only
+    // needs to be right before the next fetch, not synchronously now.
+    priceFeed.setHasOpenPosition(positionManager.hasOpenPosition());
     priceHistoryRepo.insert(sample, {
       change5s: priceFeed.history.changePercent(5_000),
       change15s: priceFeed.history.changePercent(15_000),
