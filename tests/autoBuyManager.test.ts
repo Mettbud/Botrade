@@ -71,6 +71,44 @@ describe("AutoBuyManager", () => {
     expect(manager.status().watching).toBe(false);
   });
 
+  it("AUTO_BUY_ALLOW_AVERAGING=true lets it buy more while already holding a position", () => {
+    const manager = new AutoBuyManager(
+      enabledConfig({ AUTO_BUY_ALLOW_AVERAGING: "true" }),
+    );
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, true, 0); // already holding a position
+    history.push(sample(1_000, 0.4)); // -60%
+    manager.evaluate(history, true, 1_000);
+    expect(manager.status().watching).toBe(true); // watches despite hasOpenPosition=true
+
+    history.push(sample(2_000, 0.41)); // rebound
+    expect(manager.evaluate(history, true, 2_000)).toBe(true);
+  });
+
+  it("AUTO_BUY_MIN_GAP_MS is configurable (default 3000 too short here)", () => {
+    const manager = new AutoBuyManager(
+      enabledConfig({ AUTO_BUY_ALLOW_AVERAGING: "true", AUTO_BUY_MIN_GAP_MS: "60000" }),
+    );
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, true, 0);
+    history.push(sample(1_000, 0.4));
+    manager.evaluate(history, true, 1_000);
+    history.push(sample(2_000, 0.41));
+    expect(manager.evaluate(history, true, 2_000)).toBe(true); // first buy
+
+    // Second dip/rebound only 10s later - within the configured 60s gap.
+    history.push(sample(2_100, 1.0));
+    manager.evaluate(history, true, 2_100);
+    history.push(sample(2_200, 0.4));
+    manager.evaluate(history, true, 2_200);
+    history.push(sample(12_000, 0.41));
+    expect(manager.evaluate(history, true, 12_000)).toBe(false); // still too soon
+  });
+
   it("respects the technical minimum gap between two buy signals", () => {
     const manager = new AutoBuyManager(enabledConfig());
     const history = new PriceHistoryBuffer();

@@ -6,13 +6,6 @@ import {
   type DipWatchState,
 } from "../strategy/dipRebound.js";
 
-/**
- * A purely technical minimum gap between an auto-buy and the previous one -
- * not a strategy choice (the user explicitly wants no deliberate cooldown),
- * just a guard against a bug causing back-to-back buys in the same instant.
- */
-const MIN_GAP_MS = 3_000;
-
 export interface AutoBuyStatus {
   enabled: boolean;
   watching: boolean;
@@ -23,13 +16,17 @@ export interface AutoBuyStatus {
 }
 
 /**
- * Wires the dip/rebound heuristic to live price history: only watches for
- * a buy signal while the bot is flat (no open position) and AUTO_BUY_ENABLED
- * is on. See strategy/dipRebound.ts for the actual signal logic.
+ * Wires the dip/rebound heuristic to live price history. By default only
+ * watches for a buy signal while flat (no open position); with
+ * AUTO_BUY_ALLOW_AVERAGING=true it also fires while already holding a
+ * position, buying more on each new qualifying dip ("averaging in") -
+ * meaningfully more risk, since it can keep buying into a token that keeps
+ * falling. AUTO_BUY_MIN_GAP_MS spaces out consecutive buys regardless.
+ * See strategy/dipRebound.ts for the actual signal logic.
  */
 export class AutoBuyManager {
   private state: DipWatchState = IDLE_DIP_WATCH;
-  // -Infinity, not 0: the gap check is `nowMs - lastBuyAtMs >= MIN_GAP_MS`,
+  // -Infinity, not 0: the gap check is `nowMs - lastBuyAtMs >= minGapMs`,
   // and 0 would wrongly block a first buy if nowMs is ever small (e.g. in
   // a test using timestamps from epoch 0 rather than Date.now()).
   private lastBuyAtMs = -Infinity;
@@ -43,7 +40,8 @@ export class AutoBuyManager {
     hasOpenPosition: boolean,
     nowMs: number,
   ): boolean {
-    if (!this.config.autoBuy.enabled || hasOpenPosition) {
+    const blockedByPosition = hasOpenPosition && !this.config.autoBuy.allowAveraging;
+    if (!this.config.autoBuy.enabled || blockedByPosition) {
       this.state = IDLE_DIP_WATCH;
       return false;
     }
@@ -61,7 +59,7 @@ export class AutoBuyManager {
     this.state = result.state;
     this.lastDropPercentFromHigh = result.dropPercentFromHigh;
 
-    if (result.shouldBuy && nowMs - this.lastBuyAtMs >= MIN_GAP_MS) {
+    if (result.shouldBuy && nowMs - this.lastBuyAtMs >= this.config.autoBuy.minGapMs) {
       this.lastBuyAtMs = nowMs;
       return true;
     }

@@ -134,11 +134,19 @@ extreme wick down that immediately bounces.
 **Be honest with yourself about what this is and isn't.** It is a simple,
 transparent rule, not a prediction - there is no way for the bot (or
 anyone) to know in advance whether a given drop is "the" dip or the start
-of a bigger fall. It will buy into drops that keep falling. It only ever
-buys while the bot has no open position - but the entry decision itself
-carries real risk that `STOP_LOSS_PERCENT` limits, it doesn't remove. Test
-it in paper mode for a good while, watching how often the "rebound" was
-real vs. a dead cat bounce, before ever pairing it with live trading.
+of a bigger fall. It will buy into drops that keep falling. By default it
+only ever buys while the bot has no open position - but the entry decision
+itself carries real risk that `STOP_LOSS_PERCENT` limits, it doesn't
+remove. Test it in paper mode for a good while, watching how often the
+"rebound" was real vs. a dead cat bounce, before ever pairing it with live
+trading.
+
+Set `AUTO_BUY_ALLOW_AVERAGING=true` to let it also buy more while already
+holding a position (averaging in on each new qualifying dip, instead of
+waiting to be flat again) - meaningfully more risk, since it can keep
+buying into a token that keeps falling, with no limit on how many times.
+`AUTO_BUY_MIN_GAP_MS` (default 3000) spaces out consecutive buys either
+way; raise it for deliberate breathing room between purchases.
 
 The dashboard shows `Auto-buy: OFF` / `ON, watching for a dip (...)` /
 `WATCHING for rebound (...)` so you can see what state it's in at a glance.

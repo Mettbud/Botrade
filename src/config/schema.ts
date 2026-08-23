@@ -82,6 +82,15 @@ const rawEnvSchema = z.object({
   // before the bot starts watching for a rebound to buy into.
   AUTO_BUY_DIP_PERCENT: numFromString(50),
   AUTO_BUY_DIP_LOOKBACK_MS: numFromString(60_000),
+  // Off by default: auto-buy only fires while completely flat. When true,
+  // it also fires while already holding a position (averaging in on each
+  // new qualifying dip) - meaningfully more risk (can keep buying into a
+  // token that keeps falling), off by default for that reason.
+  AUTO_BUY_ALLOW_AVERAGING: boolFromString,
+  // Minimum time between two auto-buys, regardless of how often the dip
+  // signal fires. Low default is a technical safety minimum, not a
+  // strategy choice - raise it for deliberate spacing between buys.
+  AUTO_BUY_MIN_GAP_MS: numFromString(3_000),
 
   // Off by default. Watches raw pool reserve accounts directly over RPC as
   // a fast "something moved" trigger - never the price a trade is decided
@@ -171,6 +180,8 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       enabled: raw.AUTO_BUY_ENABLED,
       dipPercent: raw.AUTO_BUY_DIP_PERCENT,
       lookbackMs: raw.AUTO_BUY_DIP_LOOKBACK_MS,
+      allowAveraging: raw.AUTO_BUY_ALLOW_AVERAGING,
+      minGapMs: raw.AUTO_BUY_MIN_GAP_MS,
     },
     onchain: {
       watchEnabled: raw.ONCHAIN_WATCH_ENABLED,
