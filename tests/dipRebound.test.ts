@@ -45,4 +45,17 @@ describe("updateDipWatch", () => {
     const r = updateDipWatch(state, 0.3, 1.0, 50); // exactly equal, not an uptick
     expect(r.shouldBuy).toBe(false);
   });
+
+  it("disarms when a dynamic threshold widens beyond the current drawdown", () => {
+    const calmState = updateDipWatch(IDLE_DIP_WATCH, 0.98, 1.0, 2).state;
+    expect(calmState.watching).toBe(true);
+
+    const volatileState = updateDipWatch(calmState, 0.97, 1.0, 5);
+    expect(volatileState.shouldBuy).toBe(false);
+    expect(volatileState.state).toEqual(IDLE_DIP_WATCH);
+
+    const rearmed = updateDipWatch(volatileState.state, 0.94, 1.0, 5);
+    expect(rearmed.state.watching).toBe(true);
+    expect(rearmed.state.armedDipPercent).toBe(5);
+  });
 });

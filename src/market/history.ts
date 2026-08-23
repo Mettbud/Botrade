@@ -65,4 +65,69 @@ export class PriceHistoryBuffer {
     }
     return max;
   }
+
+  /**
+   * Largest rise from an earlier low to a later high inside `windowMs`.
+   * Ordering matters: a high followed only by a crash is not misclassified
+   * as a pump merely because the resulting high/low range is large.
+   */
+  maxRunUpPercent(windowMs: number): number | undefined {
+    const latest = this.latest();
+    if (!latest) return undefined;
+
+    const cutoff = latest.timestampMs - windowMs;
+    let lowestPrice: number | undefined;
+    let maxRunUpPercent = 0;
+    let sampleCount = 0;
+
+    for (const sample of this.samples) {
+      if (sample.timestampMs < cutoff) continue;
+      sampleCount += 1;
+
+      if (lowestPrice === undefined || sample.sellPriceUsd < lowestPrice) {
+        lowestPrice = sample.sellPriceUsd;
+        continue;
+      }
+      if (lowestPrice <= 0) continue;
+
+      const runUpPercent =
+        ((sample.sellPriceUsd - lowestPrice) / lowestPrice) * 100;
+      maxRunUpPercent = Math.max(maxRunUpPercent, runUpPercent);
+    }
+
+    return sampleCount >= 2 ? maxRunUpPercent : undefined;
+  }
+
+  /**
+   * Realized volatility from consecutive executable-price log returns.
+   * The square-root-of-squares aggregation reacts to two-way movement but
+   * does not let a smooth directional drop move the threshold one-for-one.
+   */
+  realizedVolatilityPercent(windowMs: number): number | undefined {
+    const latest = this.latest();
+    if (!latest) return undefined;
+
+    const cutoff = latest.timestampMs - windowMs;
+    let previousPrice: number | undefined;
+    let squaredReturns = 0;
+    let returnCount = 0;
+
+    for (const sample of this.samples) {
+      if (sample.timestampMs < cutoff) continue;
+      if (sample.sellPriceUsd <= 0) {
+        previousPrice = undefined;
+        continue;
+      }
+
+      if (previousPrice !== undefined) {
+        const logReturnPercent =
+          Math.log(sample.sellPriceUsd / previousPrice) * 100;
+        squaredReturns += logReturnPercent ** 2;
+        returnCount += 1;
+      }
+      previousPrice = sample.sellPriceUsd;
+    }
+
+    return returnCount > 0 ? Math.sqrt(squaredReturns) : undefined;
+  }
 }

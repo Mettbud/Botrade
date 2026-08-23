@@ -15,6 +15,32 @@ const numFromString = (fallback: number) =>
     .transform((v) => Number(v))
     .pipe(z.number().finite());
 
+const boundedNumberFromString = (
+  fallback: number,
+  minimum: number,
+  maximum: number,
+) =>
+  z
+    .string()
+    .default(String(fallback))
+    .transform((v) => Number(v))
+    .pipe(z.number().finite().min(minimum).max(maximum));
+
+const percentFromString = (fallback: number) =>
+  boundedNumberFromString(fallback, 0, 100);
+
+const positiveMillisecondsFromString = (fallback: number) =>
+  z
+    .string()
+    .default(String(fallback))
+    .transform((v) => Number(v))
+    .pipe(z.number().int().positive());
+
+const trueByDefaultBoolFromString = z
+  .string()
+  .default("true")
+  .transform((v) => v.trim().toLowerCase() === "true");
+
 const rawEnvSchema = z.object({
   WALLET_PRIVATE_KEY: z.string().default(""),
   RPC_URL: z.string().url().default("https://api.mainnet-beta.solana.com"),
@@ -105,6 +131,20 @@ const rawEnvSchema = z.object({
   // before the bot starts watching for a rebound to buy into.
   AUTO_BUY_DIP_PERCENT: numFromString(50),
   AUTO_BUY_DIP_LOOKBACK_MS: numFromString(60_000),
+  // A 2% dip is useful in calm trading but too sensitive immediately after
+  // a pump. When the low-to-high run-up crosses this threshold inside the
+  // peak lookback, require the wider peak dip before watching for a rebound.
+  AUTO_BUY_PEAK_PROTECTION_ENABLED: trueByDefaultBoolFromString,
+  AUTO_BUY_PEAK_LOOKBACK_MS: positiveMillisecondsFromString(300_000),
+  AUTO_BUY_PEAK_RUNUP_PERCENT: percentFromString(10),
+  AUTO_BUY_PEAK_DIP_PERCENT: percentFromString(8),
+  // Continuous volatility protection. Realized volatility is calculated
+  // from consecutive price returns, doubled into a dip threshold and capped
+  // at 12%. The final threshold is the strictest of base/peak/volatility.
+  AUTO_BUY_VOLATILITY_PROTECTION_ENABLED: trueByDefaultBoolFromString,
+  AUTO_BUY_VOLATILITY_LOOKBACK_MS: positiveMillisecondsFromString(60_000),
+  AUTO_BUY_VOLATILITY_MULTIPLIER: boundedNumberFromString(2, 0, 10),
+  AUTO_BUY_VOLATILITY_MAX_DIP_PERCENT: percentFromString(12),
   // Off by default: auto-buy only fires while completely flat. When true,
   // it also fires while already holding a position (averaging in on each
   // new qualifying dip) - meaningfully more risk (can keep buying into a
@@ -245,6 +285,15 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       enabled: raw.AUTO_BUY_ENABLED,
       dipPercent: raw.AUTO_BUY_DIP_PERCENT,
       lookbackMs: raw.AUTO_BUY_DIP_LOOKBACK_MS,
+      peakProtectionEnabled: raw.AUTO_BUY_PEAK_PROTECTION_ENABLED,
+      peakLookbackMs: raw.AUTO_BUY_PEAK_LOOKBACK_MS,
+      peakRunUpPercent: raw.AUTO_BUY_PEAK_RUNUP_PERCENT,
+      peakDipPercent: raw.AUTO_BUY_PEAK_DIP_PERCENT,
+      volatilityProtectionEnabled:
+        raw.AUTO_BUY_VOLATILITY_PROTECTION_ENABLED,
+      volatilityLookbackMs: raw.AUTO_BUY_VOLATILITY_LOOKBACK_MS,
+      volatilityMultiplier: raw.AUTO_BUY_VOLATILITY_MULTIPLIER,
+      volatilityMaxDipPercent: raw.AUTO_BUY_VOLATILITY_MAX_DIP_PERCENT,
       allowAveraging: raw.AUTO_BUY_ALLOW_AVERAGING,
       minGapMs: raw.AUTO_BUY_MIN_GAP_MS,
       requireBelowLastSell: raw.AUTO_BUY_REQUIRE_BELOW_LAST_SELL,

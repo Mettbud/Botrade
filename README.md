@@ -141,6 +141,29 @@ By default the bot never buys on its own - `buy` is the only way in. Set
 after that. This targets a pattern CYBERLEEK specifically shows - a sudden,
 extreme wick down that immediately bounces.
 
+The configured dip is now the calm-market floor, not always the final
+threshold. Two protections can widen it automatically, and the strictest
+value wins:
+
+- **Peak protection:** after an ordered low-to-high run-up of at least
+  `AUTO_BUY_PEAK_RUNUP_PERCENT` (default 10%) inside
+  `AUTO_BUY_PEAK_LOOKBACK_MS` (default 5 minutes), require at least
+  `AUTO_BUY_PEAK_DIP_PERCENT` (default 8%) from the peak. A later crash is
+  not itself mistaken for the earlier run-up; the low must occur first.
+- **Volatility protection:** calculate rolling realized volatility from
+  consecutive executable-price changes over
+  `AUTO_BUY_VOLATILITY_LOOKBACK_MS` (default 60 seconds), multiply it by
+  `AUTO_BUY_VOLATILITY_MULTIPLIER` (default 2), and cap that component at
+  `AUTO_BUY_VOLATILITY_MAX_DIP_PERCENT` (default 12%). For example, 3%
+  realized volatility produces a 6% dip requirement.
+
+With a custom calm-market value of 2%, the effective threshold is therefore
+`max(2%, peak 8% when active, 2 x current volatility up to 12%)`. Both
+protections default to on, can be disabled independently, and never make a
+more conservative base setting smaller. If volatility tightens the threshold
+after a dip was already being watched, the old signal is disarmed until price
+actually reaches the newer threshold.
+
 **Be honest with yourself about what this is and isn't.** It is a simple,
 transparent rule, not a prediction - there is no way for the bot (or
 anyone) to know in advance whether a given drop is "the" dip or the start
@@ -159,7 +182,8 @@ buying into a token that keeps falling, with no limit on how many times.
 way; raise it for deliberate breathing room between purchases.
 
 The dashboard shows `Auto-buy: OFF` / `ON, watching for a dip (...)` /
-`WATCHING for rebound (...)` so you can see what state it's in at a glance.
+`WATCHING for rebound (...)`, the effective threshold, and `PEAK`/`VOL`
+labels whenever either protection is actively widening it.
 
 **Position sizing is the same formula on both modes, with one guardrail
 that only applies to LIVE.** Every auto-buy spends

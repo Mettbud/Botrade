@@ -3,9 +3,15 @@ export interface DipWatchState {
   watching: boolean;
   /** Lowest executable sell price seen since we started watching. */
   lowestPriceUsd: number;
+  /** Effective dip threshold that armed the current watch. */
+  armedDipPercent: number;
 }
 
-export const IDLE_DIP_WATCH: DipWatchState = { watching: false, lowestPriceUsd: 0 };
+export const IDLE_DIP_WATCH: DipWatchState = {
+  watching: false,
+  lowestPriceUsd: 0,
+  armedDipPercent: 0,
+};
 
 export interface DipReboundResult {
   state: DipWatchState;
@@ -39,12 +45,39 @@ export function updateDipWatch(
 
     if (dropPercentFromHigh >= dipPercent) {
       return {
-        state: { watching: true, lowestPriceUsd: currentPriceUsd },
+        state: {
+          watching: true,
+          lowestPriceUsd: currentPriceUsd,
+          armedDipPercent: dipPercent,
+        },
         shouldBuy: false,
         dropPercentFromHigh,
       };
     }
     return { state, shouldBuy: false, dropPercentFromHigh };
+  }
+
+  // Volatility/peak protection may tighten while a dip is already being
+  // watched. If the current drawdown has not reached that newer threshold,
+  // disarm instead of buying on a small uptick under stale calm-market rules.
+  if (dipPercent > state.armedDipPercent) {
+    if (recentHighUsd === undefined || recentHighUsd <= 0) {
+      return {
+        state: IDLE_DIP_WATCH,
+        shouldBuy: false,
+        dropPercentFromHigh: undefined,
+      };
+    }
+    const currentDropPercent =
+      ((recentHighUsd - currentPriceUsd) / recentHighUsd) * 100;
+    if (currentDropPercent < dipPercent) {
+      return {
+        state: IDLE_DIP_WATCH,
+        shouldBuy: false,
+        dropPercentFromHigh: currentDropPercent,
+      };
+    }
+    state = { ...state, armedDipPercent: dipPercent };
   }
 
   // Watching: the first uptick from the lowest point seen is the signal.
@@ -53,7 +86,11 @@ export function updateDipWatch(
   }
 
   return {
-    state: { watching: true, lowestPriceUsd: Math.min(state.lowestPriceUsd, currentPriceUsd) },
+    state: {
+      watching: true,
+      lowestPriceUsd: Math.min(state.lowestPriceUsd, currentPriceUsd),
+      armedDipPercent: state.armedDipPercent,
+    },
     shouldBuy: false,
     dropPercentFromHigh: undefined,
   };

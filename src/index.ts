@@ -68,6 +68,16 @@ async function main(): Promise<void> {
     logger.info(
       `AUTO_BUY_ENABLED: watching for a ${config.autoBuy.dipPercent}%+ drop within ${config.autoBuy.lookbackMs}ms, then buying on the first rebound tick.`,
     );
+    if (config.autoBuy.peakProtectionEnabled) {
+      logger.info(
+        `AUTO_BUY_PEAK_PROTECTION: after a ${config.autoBuy.peakRunUpPercent}%+ run-up within ${config.autoBuy.peakLookbackMs}ms, the required dip widens to ${Math.max(config.autoBuy.dipPercent, config.autoBuy.peakDipPercent)}%.`,
+      );
+    }
+    if (config.autoBuy.volatilityProtectionEnabled) {
+      logger.info(
+        `AUTO_BUY_VOLATILITY_PROTECTION: ${config.autoBuy.volatilityLookbackMs}ms realized volatility x${config.autoBuy.volatilityMultiplier}, capped at a ${config.autoBuy.volatilityMaxDipPercent}% dip threshold.`,
+      );
+    }
   }
   const crashBuyManager = new CrashBuyManager(config);
   let crashBuyInFlight = false;

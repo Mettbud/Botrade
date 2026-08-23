@@ -46,3 +46,35 @@ describe("config mint address handling", () => {
     }
   });
 });
+
+describe("adaptive auto-buy config", () => {
+  it("uses conservative peak and volatility defaults", () => {
+    const config = buildConfig(MINIMAL_ENV);
+
+    expect(config.autoBuy).toMatchObject({
+      peakProtectionEnabled: true,
+      peakLookbackMs: 300_000,
+      peakRunUpPercent: 10,
+      peakDipPercent: 8,
+      volatilityProtectionEnabled: true,
+      volatilityLookbackMs: 60_000,
+      volatilityMultiplier: 2,
+      volatilityMaxDipPercent: 12,
+    });
+  });
+
+  it("rejects invalid adaptive percentages and multipliers", () => {
+    expect(() =>
+      buildConfig({
+        ...MINIMAL_ENV,
+        AUTO_BUY_PEAK_DIP_PERCENT: "101",
+      } as NodeJS.ProcessEnv),
+    ).toThrow();
+    expect(() =>
+      buildConfig({
+        ...MINIMAL_ENV,
+        AUTO_BUY_VOLATILITY_MULTIPLIER: "-1",
+      } as NodeJS.ProcessEnv),
+    ).toThrow();
+  });
+});

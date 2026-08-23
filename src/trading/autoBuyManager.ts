@@ -5,6 +5,7 @@ import {
   updateDipWatch,
   type DipWatchState,
 } from "../strategy/dipRebound.js";
+import { resolveAutoBuyDipThreshold } from "../strategy/autoBuyDipThreshold.js";
 
 export interface AutoBuyStatus {
   enabled: boolean;
@@ -13,6 +14,14 @@ export interface AutoBuyStatus {
   dropPercentFromHigh: number | undefined;
   /** The low being tracked while watching, waiting for an uptick past it. */
   watchingLowUsd: number | undefined;
+  /** Dip threshold currently applied after peak protection is considered. */
+  effectiveDipPercent: number;
+  peakProtectionActive: boolean;
+  /** Largest ordered low-to-high rise in the peak-protection window. */
+  recentRunUpPercent: number | undefined;
+  volatilityProtectionActive: boolean;
+  /** Rolling realized volatility calculated from consecutive price moves. */
+  realizedVolatilityPercent: number | undefined;
 }
 
 /**
@@ -31,8 +40,15 @@ export class AutoBuyManager {
   // a test using timestamps from epoch 0 rather than Date.now()).
   private lastBuyAtMs = -Infinity;
   private lastDropPercentFromHigh: number | undefined;
+  private effectiveDipPercent: number;
+  private peakProtectionActive = false;
+  private recentRunUpPercent: number | undefined;
+  private volatilityProtectionActive = false;
+  private realizedVolatilityPercent: number | undefined;
 
-  constructor(private readonly config: BotConfig) {}
+  constructor(private readonly config: BotConfig) {
+    this.effectiveDipPercent = config.autoBuy.dipPercent;
+  }
 
   /**
    * Returns true exactly on the tick a buy should fire.
@@ -55,12 +71,42 @@ export class AutoBuyManager {
     const latest = history.latest();
     if (!latest) return false;
 
-    const recentHigh = history.maxPrice(this.config.autoBuy.lookbackMs);
+    this.recentRunUpPercent = history.maxRunUpPercent(
+      this.config.autoBuy.peakLookbackMs,
+    );
+    this.realizedVolatilityPercent = history.realizedVolatilityPercent(
+      this.config.autoBuy.volatilityLookbackMs,
+    );
+    const threshold = resolveAutoBuyDipThreshold({
+      baseDipPercent: this.config.autoBuy.dipPercent,
+      peakProtectionEnabled: this.config.autoBuy.peakProtectionEnabled,
+      recentRunUpPercent: this.recentRunUpPercent ?? 0,
+      peakRunUpPercent: this.config.autoBuy.peakRunUpPercent,
+      peakDipPercent: this.config.autoBuy.peakDipPercent,
+      volatilityProtectionEnabled:
+        this.config.autoBuy.volatilityProtectionEnabled,
+      realizedVolatilityPercent: this.realizedVolatilityPercent ?? 0,
+      volatilityMultiplier: this.config.autoBuy.volatilityMultiplier,
+      volatilityMaxDipPercent: this.config.autoBuy.volatilityMaxDipPercent,
+    });
+    this.effectiveDipPercent = threshold.effectiveDipPercent;
+    this.peakProtectionActive = threshold.peakProtectionActive;
+    this.volatilityProtectionActive =
+      threshold.volatilityProtectionActive;
+
+    const highLookbackMs = Math.max(
+      this.config.autoBuy.lookbackMs,
+      this.peakProtectionActive ? this.config.autoBuy.peakLookbackMs : 0,
+      this.volatilityProtectionActive
+        ? this.config.autoBuy.volatilityLookbackMs
+        : 0,
+    );
+    const recentHigh = history.maxPrice(highLookbackMs);
     const result = updateDipWatch(
       this.state,
       latest.sellPriceUsd,
       recentHigh,
-      this.config.autoBuy.dipPercent,
+      this.effectiveDipPercent,
     );
     this.state = result.state;
     this.lastDropPercentFromHigh = result.dropPercentFromHigh;
@@ -85,6 +131,11 @@ export class AutoBuyManager {
       watching: this.state.watching,
       dropPercentFromHigh: this.lastDropPercentFromHigh,
       watchingLowUsd: this.state.watching ? this.state.lowestPriceUsd : undefined,
+      effectiveDipPercent: this.effectiveDipPercent,
+      peakProtectionActive: this.peakProtectionActive,
+      recentRunUpPercent: this.recentRunUpPercent,
+      volatilityProtectionActive: this.volatilityProtectionActive,
+      realizedVolatilityPercent: this.realizedVolatilityPercent,
     };
   }
 }

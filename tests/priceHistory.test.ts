@@ -62,6 +62,63 @@ describe("PriceHistoryBuffer", () => {
     expect(buf.maxPrice(10_000)).toBeCloseTo(1.0, 9);
   });
 
+  it("maxRunUpPercent measures an earlier low followed by a later high", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 6_000_000;
+    buf.push(sample(t0, 1.0));
+    buf.push(sample(t0 + 5_000, 1.1)); // +10% pump
+    buf.push(sample(t0 + 10_000, 0.9)); // later crash does not erase the pump
+
+    expect(buf.maxRunUpPercent(10_000)).toBeCloseTo(10, 9);
+  });
+
+  it("maxRunUpPercent does not mistake a high followed by a crash for a pump", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 7_000_000;
+    buf.push(sample(t0, 1.1));
+    buf.push(sample(t0 + 5_000, 1.0));
+    buf.push(sample(t0 + 10_000, 0.9));
+
+    expect(buf.maxRunUpPercent(10_000)).toBe(0);
+  });
+
+  it("maxRunUpPercent ignores a pump outside its lookback", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 8_000_000;
+    buf.push(sample(t0, 1.0));
+    buf.push(sample(t0 + 5_000, 1.2));
+    buf.push(sample(t0 + 30_000, 1.1));
+    buf.push(sample(t0 + 35_000, 1.11));
+
+    expect(buf.maxRunUpPercent(10_000)).toBeCloseTo(
+      (1.11 / 1.1 - 1) * 100,
+      9,
+    );
+  });
+
+  it("realizedVolatilityPercent aggregates consecutive price moves", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 9_000_000;
+    buf.push(sample(t0, 100));
+    buf.push(sample(t0 + 1_000, 101));
+    buf.push(sample(t0 + 2_000, 100));
+
+    const expected = Math.sqrt(
+      (Math.log(101 / 100) * 100) ** 2 +
+        (Math.log(100 / 101) * 100) ** 2,
+    );
+    expect(buf.realizedVolatilityPercent(10_000)).toBeCloseTo(expected, 9);
+  });
+
+  it("realizedVolatilityPercent is zero for a flat market", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 10_000_000;
+    buf.push(sample(t0, 1));
+    buf.push(sample(t0 + 1_000, 1));
+
+    expect(buf.realizedVolatilityPercent(10_000)).toBe(0);
+  });
+
   it("evicts samples older than the retention window", () => {
     const buf = new PriceHistoryBuffer();
     buf.push(sample(0, 1.0));

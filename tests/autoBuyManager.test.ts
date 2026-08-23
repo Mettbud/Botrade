@@ -71,6 +71,104 @@ describe("AutoBuyManager", () => {
     expect(manager.status().watching).toBe(false);
   });
 
+  it("keeps the base dip threshold when there was no preceding pump", () => {
+    const manager = new AutoBuyManager(
+      enabledConfig({
+        AUTO_BUY_DIP_PERCENT: "2",
+        AUTO_BUY_VOLATILITY_PROTECTION_ENABLED: "false",
+      }),
+    );
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, false, 0);
+    history.push(sample(1_000, 0.979)); // -2.1%, with no earlier run-up
+    expect(manager.evaluate(history, false, 1_000)).toBe(false);
+    expect(manager.status()).toMatchObject({
+      watching: true,
+      effectiveDipPercent: 2,
+      peakProtectionActive: false,
+    });
+
+    history.push(sample(2_000, 0.98));
+    expect(manager.evaluate(history, false, 2_000)).toBe(true);
+  });
+
+  it("widens a 2% dip threshold to 8% after a 10% five-minute run-up", () => {
+    const manager = new AutoBuyManager(
+      enabledConfig({
+        AUTO_BUY_DIP_PERCENT: "2",
+        AUTO_BUY_VOLATILITY_PROTECTION_ENABLED: "false",
+      }),
+    );
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, false, 0);
+    history.push(sample(60_000, 1.1)); // +10% pump
+    manager.evaluate(history, false, 60_000);
+
+    history.push(sample(90_000, 1.04)); // only -5.45% from the peak
+    expect(manager.evaluate(history, false, 90_000)).toBe(false);
+    expect(manager.status()).toMatchObject({
+      watching: false,
+      effectiveDipPercent: 8,
+      peakProtectionActive: true,
+    });
+
+    history.push(sample(120_000, 1.012)); // -8% from the $1.10 peak
+    expect(manager.evaluate(history, false, 120_000)).toBe(false);
+    expect(manager.status().watching).toBe(true);
+
+    history.push(sample(121_000, 1.013)); // first rebound tick
+    expect(manager.evaluate(history, false, 121_000)).toBe(true);
+  });
+
+  it("peak protection never lowers a more conservative base threshold", () => {
+    const manager = new AutoBuyManager(
+      enabledConfig({
+        AUTO_BUY_DIP_PERCENT: "12",
+        AUTO_BUY_VOLATILITY_PROTECTION_ENABLED: "false",
+      }),
+    );
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, false, 0);
+    history.push(sample(60_000, 1.1));
+    manager.evaluate(history, false, 60_000);
+
+    expect(manager.status()).toMatchObject({
+      effectiveDipPercent: 12,
+      peakProtectionActive: true,
+    });
+  });
+
+  it("widens the dip continuously when realized volatility increases", () => {
+    const manager = new AutoBuyManager(
+      enabledConfig({
+        AUTO_BUY_DIP_PERCENT: "2",
+        AUTO_BUY_PEAK_PROTECTION_ENABLED: "false",
+      }),
+    );
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, false, 0);
+    history.push(sample(1_000, 1.03));
+    manager.evaluate(history, false, 1_000);
+    history.push(sample(2_000, 1.0));
+    manager.evaluate(history, false, 2_000);
+
+    const status = manager.status();
+    expect(status.volatilityProtectionActive).toBe(true);
+    expect(status.realizedVolatilityPercent).toBeGreaterThan(4);
+    expect(status.effectiveDipPercent).toBeCloseTo(
+      Math.min(status.realizedVolatilityPercent! * 2, 12),
+      9,
+    );
+  });
+
   it("AUTO_BUY_ALLOW_AVERAGING=true lets it buy more while already holding a position", () => {
     const manager = new AutoBuyManager(
       enabledConfig({ AUTO_BUY_ALLOW_AVERAGING: "true" }),

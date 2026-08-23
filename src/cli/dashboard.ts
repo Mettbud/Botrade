@@ -127,10 +127,16 @@ export function formatStopLossMargin(lossPercent: number): string {
 
 function formatAutoBuyLine(status: AutoBuyStatus): string {
   if (!status.enabled) return `Auto-buy: ${colorize("OFF", colors.DIM)}`;
+  const peakLabel = status.peakProtectionActive
+    ? `, ${colorize("PEAK", colors.YELLOW)} +${status.recentRunUpPercent?.toFixed(2)}%`
+    : "";
+  const volatilityLabel = status.volatilityProtectionActive
+    ? `, ${colorize("VOL", colors.YELLOW)} ${status.realizedVolatilityPercent?.toFixed(2)}%`
+    : "";
   if (status.watching) {
-    return `Auto-buy: ${colorize("WATCHING for rebound", colors.YELLOW)} (low so far: ${usd(status.watchingLowUsd, 8)})`;
+    return `Auto-buy: ${colorize("WATCHING for rebound", colors.YELLOW)} (dip threshold ${status.effectiveDipPercent.toFixed(2)}%${peakLabel}${volatilityLabel}, low so far: ${usd(status.watchingLowUsd, 8)})`;
   }
-  return `Auto-buy: ON, watching for a dip (currently ${pct(status.dropPercentFromHigh ? -status.dropPercentFromHigh : undefined)} from recent high)`;
+  return `Auto-buy: ON, watching for a ${status.effectiveDipPercent.toFixed(2)}% dip${peakLabel}${volatilityLabel} (currently ${pct(status.dropPercentFromHigh ? -status.dropPercentFromHigh : undefined)} from recent high)`;
 }
 
 export function renderDashboard(s: DashboardState): void {
