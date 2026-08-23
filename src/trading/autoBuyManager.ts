@@ -34,11 +34,17 @@ export class AutoBuyManager {
 
   constructor(private readonly config: BotConfig) {}
 
-  /** Returns true exactly on the tick a buy should fire. */
+  /**
+   * Returns true exactly on the tick a buy should fire.
+   * `lastSellPriceUsd` (PositionManager.getLastSellPriceUsd()) gates the
+   * final decision when AUTO_BUY_REQUIRE_BELOW_LAST_SELL is on: never
+   * re-enter at or above the price of the most recent sell this run.
+   */
   evaluate(
     history: PriceHistoryBuffer,
     hasOpenPosition: boolean,
     nowMs: number,
+    lastSellPriceUsd?: number,
   ): boolean {
     const blockedByPosition = hasOpenPosition && !this.config.autoBuy.allowAveraging;
     if (!this.config.autoBuy.enabled || blockedByPosition) {
@@ -59,11 +65,18 @@ export class AutoBuyManager {
     this.state = result.state;
     this.lastDropPercentFromHigh = result.dropPercentFromHigh;
 
-    if (result.shouldBuy && nowMs - this.lastBuyAtMs >= this.config.autoBuy.minGapMs) {
-      this.lastBuyAtMs = nowMs;
-      return true;
+    if (!result.shouldBuy) return false;
+    if (nowMs - this.lastBuyAtMs < this.config.autoBuy.minGapMs) return false;
+    if (
+      this.config.autoBuy.requireBelowLastSell &&
+      lastSellPriceUsd !== undefined &&
+      latest.sellPriceUsd >= lastSellPriceUsd
+    ) {
+      return false;
     }
-    return false;
+
+    this.lastBuyAtMs = nowMs;
+    return true;
   }
 
   status(): AutoBuyStatus {

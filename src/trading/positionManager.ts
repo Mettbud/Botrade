@@ -27,6 +27,8 @@ export class PositionManager {
   private readonly stopLossConfirm: TriggerConfirmation;
   private readonly trailingConfirm: TriggerConfirmation;
   private lastBlockedLogMs = 0;
+  /** Executable price of the most recent sell this run - undefined until the first one. */
+  private lastSellPriceUsd: number | undefined;
 
   constructor(
     private readonly executor: TradeExecutor,
@@ -120,6 +122,11 @@ export class PositionManager {
     return this.costBasis.tokenAmount > 0;
   }
 
+  /** Executable price of the most recent sell this run, if any - see AUTO_BUY_REQUIRE_BELOW_LAST_SELL. */
+  getLastSellPriceUsd(): number | undefined {
+    return this.lastSellPriceUsd;
+  }
+
   async manualSell(
     percentOfPosition: number,
     reason: TradeReason,
@@ -186,6 +193,9 @@ export class PositionManager {
     this.costBasis = applyTrade(this.costBasis, trade);
     trade.realizedPnlUsd = this.costBasis.realizedPnlUsd - before;
     this.tradesRepo.insert(trade);
+    if (trade.tokenAmount > 0) {
+      this.lastSellPriceUsd = trade.usdEstimate / trade.tokenAmount;
+    }
 
     if (this.costBasis.tokenAmount <= 0) {
       this.trailingState = undefined;

@@ -56,7 +56,7 @@ export function formatDashboard(s: DashboardState): string {
       `Stop loss (${s.stopLossPercent}%):     ${ev.stopLoss.triggered ? colorize("TRIGGERED", colors.RED) : `${ev.stopLoss.lossPercent.toFixed(2)}% loss`}`,
     );
     lines.push(
-      `Trailing stop (${s.trailingStopPercent}%): ${ev.trailing.triggered ? colorize("TRIGGERED", colors.RED) : ev.trailing.state.armed ? "armed" : "not armed yet"}`,
+      `Trailing stop (${ev.trailing.appliedPercent}%): ${ev.trailing.triggered ? colorize("TRIGGERED", colors.RED) : ev.trailing.state.armed ? "armed" : "not armed yet"}`,
     );
   } else {
     lines.push("Position: none");

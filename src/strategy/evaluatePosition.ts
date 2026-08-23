@@ -11,6 +11,7 @@ import {
   updateTrailingStop,
   type TrailingStopState,
 } from "./trailingStop.js";
+import { resolveTrailingStopPercent } from "./trailingStopScale.js";
 
 export interface PositionEvaluation {
   averageEntryPriceUsd: number | undefined;
@@ -20,6 +21,8 @@ export interface PositionEvaluation {
     state: TrailingStopState;
     triggered: boolean;
     drawdownFromHighPercent: number;
+    /** The trailing-stop % actually applied this tick (may be scaled by peak gain). */
+    appliedPercent: number;
   };
   dueTakeProfitLevels: TakeProfitLevel[];
 }
@@ -44,7 +47,12 @@ export function evaluatePosition(
       averageEntryPriceUsd: undefined,
       unrealized: undefined,
       stopLoss: { triggered: false, lossPercent: 0 },
-      trailing: { state: trailingState, triggered: false, drawdownFromHighPercent: 0 },
+      trailing: {
+        state: trailingState,
+        triggered: false,
+        drawdownFromHighPercent: 0,
+        appliedPercent: config.strategy.trailingStopPercent,
+      },
       dueTakeProfitLevels: [],
     };
   }
@@ -55,13 +63,25 @@ export function evaluatePosition(
     config.strategy.stopLossPercent,
   );
 
-  const trailing = updateTrailingStop(
+  // The peak (highest price since entry) may move to currentSellPriceUsd
+  // this very tick - resolve the applicable trailing-stop % against that
+  // prospective peak's gain before evaluating the trigger against it.
+  const prospectiveHighUsd = Math.max(trailingState.highestPriceUsd, currentSellPriceUsd);
+  const peakGainPercent = ((prospectiveHighUsd - entryPrice) / entryPrice) * 100;
+  const appliedTrailingStopPercent = resolveTrailingStopPercent(
+    peakGainPercent,
+    config.strategy.trailingStopLevels,
+    config.strategy.trailingStopPercent,
+  );
+
+  const trailingResult = updateTrailingStop(
     trailingState,
     currentSellPriceUsd,
     entryPrice,
-    config.strategy.trailingStopPercent,
+    appliedTrailingStopPercent,
     config.strategy.trailingStopActivationPercent,
   );
+  const trailing = { ...trailingResult, appliedPercent: appliedTrailingStopPercent };
 
   const dueTakeProfitLevels = unrealized
     ? checkTakeProfit(

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseTakeProfitLevels } from "./takeProfitLevels.js";
+import { parseTrailingStopLevels } from "./trailingStopLevels.js";
 import { parseWatchPools } from "./watchPools.js";
 
 const boolFromString = z
@@ -69,6 +70,9 @@ const rawEnvSchema = z.object({
   STOP_LOSS_PERCENT: numFromString(15),
   TRAILING_STOP_PERCENT: numFromString(12),
   TRAILING_STOP_ACTIVATION_PERCENT: numFromString(0),
+  // "gainPercent:trailingStopPercent" pairs, comma separated. Empty (default)
+  // disables scaling - flat TRAILING_STOP_PERCENT is used regardless of gain.
+  TRAILING_STOP_LEVELS: z.string().default(""),
 
   STOP_CONFIRMATION_ENABLED: boolFromString,
   STOP_CONFIRMATION_MS: numFromString(2000),
@@ -91,6 +95,14 @@ const rawEnvSchema = z.object({
   // signal fires. Low default is a technical safety minimum, not a
   // strategy choice - raise it for deliberate spacing between buys.
   AUTO_BUY_MIN_GAP_MS: numFromString(3_000),
+  // On by default: a rebound buy is only executed if the price is below
+  // the most recent sell's executable price this run - never re-enter
+  // worse than where you just exited. No effect until at least one sell
+  // has happened (nothing to compare against yet).
+  AUTO_BUY_REQUIRE_BELOW_LAST_SELL: z
+    .string()
+    .default("true")
+    .transform((v) => v.trim().toLowerCase() === "true"),
 
   // Off by default. Watches raw pool reserve accounts directly over RPC as
   // a fast "something moved" trigger - never the price a trade is decided
@@ -173,6 +185,7 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       stopLossPercent: raw.STOP_LOSS_PERCENT,
       trailingStopPercent: raw.TRAILING_STOP_PERCENT,
       trailingStopActivationPercent: raw.TRAILING_STOP_ACTIVATION_PERCENT,
+      trailingStopLevels: parseTrailingStopLevels(raw.TRAILING_STOP_LEVELS),
       stopConfirmationEnabled: raw.STOP_CONFIRMATION_ENABLED,
       stopConfirmationMs: raw.STOP_CONFIRMATION_MS,
     },
@@ -182,6 +195,7 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       lookbackMs: raw.AUTO_BUY_DIP_LOOKBACK_MS,
       allowAveraging: raw.AUTO_BUY_ALLOW_AVERAGING,
       minGapMs: raw.AUTO_BUY_MIN_GAP_MS,
+      requireBelowLastSell: raw.AUTO_BUY_REQUIRE_BELOW_LAST_SELL,
     },
     onchain: {
       watchEnabled: raw.ONCHAIN_WATCH_ENABLED,

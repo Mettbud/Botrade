@@ -109,6 +109,49 @@ describe("AutoBuyManager", () => {
     expect(manager.evaluate(history, true, 12_000)).toBe(false); // still too soon
   });
 
+  it("blocks a rebound buy at/above the last sell price when AUTO_BUY_REQUIRE_BELOW_LAST_SELL is on (default)", () => {
+    const manager = new AutoBuyManager(
+      enabledConfig({ AUTO_BUY_ALLOW_AVERAGING: "true" }),
+    );
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, true, 0, 1.1); // last sell was at $1.10
+    history.push(sample(1_000, 0.4)); // -60% dip
+    manager.evaluate(history, true, 1_000, 1.1);
+    history.push(sample(2_000, 1.2)); // rebounds, but to $1.20 - ABOVE the last sell ($1.10)
+
+    expect(manager.evaluate(history, true, 2_000, 1.1)).toBe(false);
+  });
+
+  it("allows a rebound buy below the last sell price", () => {
+    const manager = new AutoBuyManager(
+      enabledConfig({ AUTO_BUY_ALLOW_AVERAGING: "true" }),
+    );
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, true, 0, 1.1); // last sell was at $1.10
+    history.push(sample(1_000, 0.4));
+    manager.evaluate(history, true, 1_000, 1.1);
+    history.push(sample(2_000, 0.41)); // rebounds to $0.41 - well below $1.10
+
+    expect(manager.evaluate(history, true, 2_000, 1.1)).toBe(true);
+  });
+
+  it("ignores the last-sell gate when there is no recorded sell yet (undefined)", () => {
+    const manager = new AutoBuyManager(enabledConfig());
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, false, 0, undefined);
+    history.push(sample(1_000, 0.4));
+    manager.evaluate(history, false, 1_000, undefined);
+    history.push(sample(2_000, 0.41));
+
+    expect(manager.evaluate(history, false, 2_000, undefined)).toBe(true);
+  });
+
   it("respects the technical minimum gap between two buy signals", () => {
     const manager = new AutoBuyManager(enabledConfig());
     const history = new PriceHistoryBuffer();

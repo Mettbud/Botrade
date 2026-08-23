@@ -99,6 +99,7 @@ async function main(): Promise<void> {
         priceFeed.history,
         positionManager.hasOpenPosition(),
         sample.timestampMs,
+        positionManager.getLastSellPriceUsd(),
       )
     ) {
       const sizeUsd = resolveAutoBuySizeUsd(
