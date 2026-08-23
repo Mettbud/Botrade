@@ -5,8 +5,11 @@ export class JupiterApiError extends Error {
     status: number,
     statusText: string,
     readonly body: unknown,
+    request?: string,
   ) {
-    super(`Jupiter API ${status} ${statusText}${formatBody(body)}`);
+    super(
+      `Jupiter API ${status} ${statusText}${formatBody(body)}${request ? ` (request: ${request})` : ""}`,
+    );
     this.status = status;
     this.name = "JupiterApiError";
   }
@@ -52,7 +55,7 @@ export class JupiterClient {
       url.searchParams.set(key, value);
     }
     const res = await fetch(url, { headers: this.headers() });
-    return this.parse<T>(res);
+    return this.parse<T>(res, () => `${path}?${url.searchParams.toString()}`);
   }
 
   async post<T>(path: string, body: unknown): Promise<T> {
@@ -61,10 +64,10 @@ export class JupiterClient {
       headers: { ...this.headers(), "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return this.parse<T>(res);
+    return this.parse<T>(res, () => path);
   }
 
-  private async parse<T>(res: Response): Promise<T> {
+  private async parse<T>(res: Response, describeRequest: () => string): Promise<T> {
     const text = await res.text();
     // The error body isn't always JSON (could be an HTML error page from a
     // proxy/CDN in front of the API) - never let a parse failure here hide
@@ -78,7 +81,7 @@ export class JupiterClient {
       }
     }
     if (!res.ok) {
-      throw new JupiterApiError(res.status, res.statusText, body);
+      throw new JupiterApiError(res.status, res.statusText, body, describeRequest());
     }
     return body as T;
   }

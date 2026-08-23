@@ -21,13 +21,19 @@ const rawEnvSchema = z.object({
   JUPITER_API_KEY: z.string().default(""),
   JUPITER_BASE_URL: z.string().url().default("https://lite-api.jup.ag"),
 
-  TARGET_TOKEN_MINT: z.string().min(32),
-  TARGET_TOKEN_SYMBOL: z.string().default("TOKEN"),
+  // .trim() guards against a stray trailing space/newline sneaking in when
+  // an address is pasted from a text editor - Jupiter rejects those with an
+  // opaque "cannot be parsed: WrongSize" instead of anything obviously
+  // pointing at whitespace.
+  TARGET_TOKEN_MINT: z.string().trim().min(32),
+  TARGET_TOKEN_SYMBOL: z.string().trim().default("TOKEN"),
   SOL_MINT: z
     .string()
+    .trim()
     .default("So11111111111111111111111111111111111111"),
   USDC_MINT: z
     .string()
+    .trim()
     .default("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 
   TRADING_MODE: z.enum(["paper", "live"]).default("paper"),
