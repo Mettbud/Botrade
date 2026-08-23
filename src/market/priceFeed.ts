@@ -69,9 +69,16 @@ export class PriceFeed extends EventEmitter {
    * tick already in flight (no overlapping fetches), and cancels the
    * currently-scheduled wait so this doesn't cause an extra tick on top of
    * the immediate one.
+   *
+   * Also never overrides an active backoff: if recent ticks have been
+   * failing (e.g. a 429), the whole point of backoff is to stop hammering
+   * the API - an on-chain jump forcing an extra request right through that
+   * would make the rate limit worse, not better. The regular (backed-off)
+   * schedule still picks it up as soon as it's healthy again.
    */
   triggerImmediateTick(): void {
     if (!this.running || this.ticking) return;
+    if (this.consecutiveErrors > 0) return;
     if (this.timer) clearTimeout(this.timer);
     this.scheduleNext(0);
   }
