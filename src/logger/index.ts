@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 type Level = "debug" | "info" | "warn" | "error";
 
 const LEVEL_ORDER: Record<Level, number> = {
@@ -33,21 +36,37 @@ function redact(meta: Record<string, unknown> | undefined) {
   return out;
 }
 
+/**
+ * Logs to the console AND, if `filePath` is given, appends a plain-text
+ * (no ANSI colors) copy to a file. The dashboard clears the terminal every
+ * second, so anything printed only to the console can flash and vanish
+ * before anyone reads it - the file is the durable record.
+ */
 export class Logger {
-  constructor(private readonly minLevel: Level = "info") {}
+  constructor(
+    private readonly minLevel: Level = "info",
+    private readonly filePath?: string,
+  ) {
+    if (this.filePath) mkdirSync(dirname(this.filePath), { recursive: true });
+  }
 
   private log(level: Level, message: string, meta?: Record<string, unknown>) {
     if (LEVEL_ORDER[level] < LEVEL_ORDER[this.minLevel]) return;
     const ts = new Date().toISOString();
     const safeMeta = redact(meta);
     const suffix = safeMeta ? ` ${JSON.stringify(safeMeta)}` : "";
-    const line = `${COLOR[level]}[${ts}] ${level.toUpperCase()}${RESET} ${message}${suffix}`;
-    if (level === "error") {
-      console.error(line);
-    } else if (level === "warn") {
-      console.warn(line);
-    } else {
-      console.log(line);
+    const plain = `[${ts}] ${level.toUpperCase()} ${message}${suffix}`;
+
+    if (level === "error") console.error(`${COLOR[level]}${plain}${RESET}`);
+    else if (level === "warn") console.warn(`${COLOR[level]}${plain}${RESET}`);
+    else console.log(`${COLOR[level]}${plain}${RESET}`);
+
+    if (this.filePath) {
+      try {
+        appendFileSync(this.filePath, plain + "\n");
+      } catch {
+        // Never let a logging failure crash the bot.
+      }
     }
   }
 
@@ -65,6 +84,6 @@ export class Logger {
   }
 }
 
-export function createLogger(level: Level = "info"): Logger {
-  return new Logger(level);
+export function createLogger(level: Level = "info", filePath?: string): Logger {
+  return new Logger(level, filePath);
 }

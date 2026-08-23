@@ -14,6 +14,9 @@ export interface DashboardState {
   tokenBalance: number;
   paperUsdBalance: number | undefined;
   lastMovementMessage: string | undefined;
+  /** Persists until the next successful sample - unlike a plain log line,
+   *  this survives the once-a-second screen clear so it's actually readable. */
+  lastErrorMessage: string | undefined;
   stopLossPercent: number;
   trailingStopPercent: number;
 }
@@ -78,6 +81,11 @@ export function formatDashboard(s: DashboardState): string {
   if (s.lastMovementMessage) {
     lines.push("");
     lines.push(s.lastMovementMessage);
+  }
+
+  if (s.lastErrorMessage) {
+    lines.push("");
+    lines.push(colorize(s.lastErrorMessage, colors.YELLOW));
   }
 
   lines.push("");

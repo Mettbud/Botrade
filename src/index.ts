@@ -19,8 +19,9 @@ import { loadWalletKeypair } from "./wallet/keypair.js";
 
 async function main(): Promise<void> {
   const config = getConfig();
-  const logger = createLogger(config.logging.level);
+  const logger = createLogger(config.logging.level, config.logging.filePath);
   assertLiveTradingSafe(config);
+  logger.info(`Logging to ${config.logging.filePath} (dashboard clears the screen, this file doesn't)`);
 
   const db = openDatabase(config);
   const tradesRepo = new TradesRepo(db);
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
   const positionManager = new PositionManager(executor, tradesRepo, config, logger);
 
   let lastMovementMessage: string | undefined;
+  let lastErrorMessage: string | undefined;
   priceFeed.on("movement", (events) => {
     for (const e of events) {
       logger.info(e.message);
@@ -62,6 +64,7 @@ async function main(): Promise<void> {
     }
   });
   priceFeed.on("sample", (sample) => {
+    lastErrorMessage = undefined; // connectivity recovered
     priceHistoryRepo.insert(sample, {
       change5s: priceFeed.history.changePercent(5_000),
       change15s: priceFeed.history.changePercent(15_000),
@@ -75,8 +78,11 @@ async function main(): Promise<void> {
       sample.timestampMs,
     );
   });
-  priceFeed.on("error", () => {
-    /* already logged inside PriceFeed; keep the loop alive */
+  priceFeed.on("error", (err) => {
+    // Full detail already went to the log file via PriceFeed's own
+    // logger.warn call - this is just the short version that stays visible
+    // on the dashboard instead of flashing away on the next screen clear.
+    lastErrorMessage = `⚠️ price feed: ${String((err as Error)?.message ?? err)}`;
   });
 
   let solBalance = 0;
@@ -110,6 +116,7 @@ async function main(): Promise<void> {
       tokenBalance,
       paperUsdBalance: executor instanceof PaperTrader ? executor.usdBalance : undefined,
       lastMovementMessage,
+      lastErrorMessage,
       stopLossPercent: config.strategy.stopLossPercent,
       trailingStopPercent: config.strategy.trailingStopPercent,
     });

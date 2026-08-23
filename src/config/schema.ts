@@ -71,6 +71,10 @@ const rawEnvSchema = z.object({
 
   DB_PATH: z.string().default("./data/cyberleek.sqlite"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  // The live dashboard clears the terminal every second, so anything only
+  // printed to the console can flash and disappear - this file is the
+  // durable, always-readable copy of every log line.
+  LOG_FILE: z.string().default("./data/bot.log"),
   DASHBOARD_REFRESH_MS: numFromString(1000),
 });
 
@@ -143,6 +147,7 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     },
     logging: {
       level: raw.LOG_LEVEL,
+      filePath: raw.LOG_FILE,
     },
     cli: {
       dashboardRefreshMs: raw.DASHBOARD_REFRESH_MS,
