@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type { BotConfig } from "../config/index.js";
+import { runMigrations } from "./migrations.js";
 
 const SCHEMA_SQL = readFileSync(new URL("./schema.sql", import.meta.url), {
   encoding: "utf-8",
@@ -18,5 +19,6 @@ export function openDatabase(config: BotConfig): Db {
   const db = new Database(config.storage.dbPath);
   db.pragma("journal_mode = WAL");
   db.exec(SCHEMA_SQL);
+  runMigrations(db);
   return db;
 }
