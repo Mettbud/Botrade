@@ -80,9 +80,7 @@ export function formatDashboard(s: DashboardState): string {
   );
 
   lines.push("");
-  lines.push(
-    `Price impact: buy ${(s.sample?.priceImpactBuyBps ?? 0) / 100}%  sell ${(s.sample?.priceImpactSellBps ?? 0) / 100}%  spread ${((s.sample?.spread ?? 0) * 100).toFixed(2)}%`,
-  );
+  lines.push(formatPriceImpactLine(s.sample));
 
   if (s.lastMovementMessage) {
     lines.push("");
@@ -107,6 +105,19 @@ export function formatDashboard(s: DashboardState): string {
  * unconditionally read as "-5.36% loss" while up 5.36% - fix the label to
  * match the sign instead of always saying "loss".
  */
+/**
+ * priceImpactBuyBps/priceImpactSellBps come straight from a Jupiter quote
+ * as raw floats (many decimal places) - unlike `spread`, which was already
+ * rounded with .toFixed(2), these used to print in full precision (e.g.
+ * "0.44457776396648256%"). Round them the same way for legibility.
+ */
+export function formatPriceImpactLine(sample: PriceSample | undefined): string {
+  const buy = ((sample?.priceImpactBuyBps ?? 0) / 100).toFixed(2);
+  const sell = ((sample?.priceImpactSellBps ?? 0) / 100).toFixed(2);
+  const spread = ((sample?.spread ?? 0) * 100).toFixed(2);
+  return `Price impact: buy ${buy}%  sell ${sell}%  spread ${spread}%`;
+}
+
 export function formatStopLossMargin(lossPercent: number): string {
   if (lossPercent <= 0) {
     return `no loss (+${Math.abs(lossPercent).toFixed(2)}% above entry)`;
