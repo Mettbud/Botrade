@@ -1,12 +1,14 @@
+import { readFileSync } from "node:fs";
 import { PublicKey } from "@solana/web3.js";
 import { assertLiveTradingSafe, getConfig, isLiveTradingArmed } from "./config/index.js";
+import { findMissingEnvKeys } from "./config/envDrift.js";
 import { renderDashboard } from "./cli/dashboard.js";
 import { startCommandLoop } from "./cli/commands.js";
 import { openDatabase } from "./database/index.js";
 import { PriceHistoryRepo } from "./database/priceHistoryRepo.js";
 import { TradesRepo } from "./database/tradesRepo.js";
 import { JupiterClient } from "./jupiter/client.js";
-import { createLogger } from "./logger/index.js";
+import { createLogger, type Logger } from "./logger/index.js";
 import { PriceFeed } from "./market/priceFeed.js";
 import { SolPriceTracker } from "./market/solPrice.js";
 import { getConnection } from "./solana/connection.js";
@@ -23,6 +25,7 @@ async function main(): Promise<void> {
   const logger = createLogger(config.logging.level, config.logging.filePath);
   assertLiveTradingSafe(config);
   logger.info(`Logging to ${config.logging.filePath} (dashboard clears the screen, this file doesn't)`);
+  warnAboutStaleEnvFile(logger);
 
   const db = openDatabase(config);
   const tradesRepo = new TradesRepo(db);
@@ -168,6 +171,30 @@ async function main(): Promise<void> {
   });
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+/**
+ * .env is git-ignored and never touched by `git pull` - a .env created
+ * before some new option was added to .env.example just silently lacks
+ * it (the schema default kicks in, so nothing breaks), which reads as
+ * "I set this and it's being ignored" instead of "this line isn't there
+ * at all". Loud but non-fatal: defaults still work fine either way.
+ */
+function warnAboutStaleEnvFile(logger: Logger): void {
+  try {
+    const exampleContent = readFileSync(
+      new URL("../.env.example", import.meta.url),
+      "utf-8",
+    );
+    const missing = findMissingEnvKeys(exampleContent, process.env);
+    if (missing.length > 0) {
+      logger.warn(
+        `.env is missing ${missing.length} newer setting(s) from .env.example (using defaults): ${missing.join(", ")}`,
+      );
+    }
+  } catch {
+    // .env.example not found next to the build (e.g. some deploy layouts) - not fatal.
+  }
 }
 
 function replayPaperUsdBalance(repo: TradesRepo, startingUsd: number): number {
