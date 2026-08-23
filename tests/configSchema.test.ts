@@ -60,6 +60,9 @@ describe("adaptive auto-buy config", () => {
       volatilityLookbackMs: 60_000,
       volatilityMultiplier: 2,
       volatilityMaxDipPercent: 12,
+      reboundPercent: 1,
+      reboundConfirmationMs: 8_000,
+      reboundTimeoutMs: 30_000,
     });
   });
 
@@ -76,6 +79,41 @@ describe("adaptive auto-buy config", () => {
         AUTO_BUY_VOLATILITY_MULTIPLIER: "-1",
       } as NodeJS.ProcessEnv),
     ).toThrow();
+  });
+});
+
+describe("recovery and direct crash-buy config", () => {
+  it("requires a pinned pool and matching watch label in direct mode", () => {
+    expect(() => buildConfig({
+      ...MINIMAL_ENV,
+      CRASH_BUY_ENABLED: "true",
+      CRASH_BUY_EXECUTION_MODE: "raydium_direct",
+      ONCHAIN_WATCH_ENABLED: "true",
+      CRASH_BUY_RAYDIUM_POOL_ID: "pool",
+    } as NodeJS.ProcessEnv)).toThrow("CRASH_BUY_RAYDIUM_WATCH_LABEL");
+
+    const config = buildConfig({
+      ...MINIMAL_ENV,
+      CRASH_BUY_ENABLED: "true",
+      CRASH_BUY_EXECUTION_MODE: "raydium_direct",
+      ONCHAIN_WATCH_ENABLED: "true",
+      CRASH_BUY_RAYDIUM_POOL_ID: "pool",
+      CRASH_BUY_RAYDIUM_WATCH_LABEL: "raydium1",
+    } as NodeJS.ProcessEnv);
+    expect(config.crashBuy).toMatchObject({
+      executionMode: "raydium_direct",
+      raydiumPoolId: "pool",
+      raydiumWatchLabel: "raydium1",
+    });
+  });
+
+  it("rejects an inverted recovery loss zone", () => {
+    expect(() => buildConfig({
+      ...MINIMAL_ENV,
+      RECOVERY_BUY_ENABLED: "true",
+      RECOVERY_BUY_MIN_LOSS_PERCENT: "12",
+      RECOVERY_BUY_MAX_LOSS_PERCENT: "4",
+    } as NodeJS.ProcessEnv)).toThrow("RECOVERY_BUY_MIN_LOSS_PERCENT");
   });
 });
 

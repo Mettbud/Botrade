@@ -20,7 +20,12 @@ import { JupiterClient } from "./jupiter/client.js";
 import { createLogger, type Logger } from "./logger/index.js";
 import { PriceFeed } from "./market/priceFeed.js";
 import { SolPriceTracker } from "./market/solPrice.js";
-import { PoolWatcher, type WatchedPool } from "./onchain/poolWatcher.js";
+import {
+  PoolWatcher,
+  type PoolJumpEvent,
+  type WatchedPool,
+} from "./onchain/poolWatcher.js";
+import { RaydiumTradeClient } from "./raydium/client.js";
 import { getConnection } from "./solana/connection.js";
 import { checkCrashBuyRebound } from "./strategy/crashBuyExit.js";
 import { AutoBuyManager } from "./trading/autoBuyManager.js";
@@ -31,6 +36,7 @@ import { resolveCrashBuySizeUsd } from "./trading/crashBuySize.js";
 import { LiveTrader } from "./trading/liveTrader.js";
 import { PaperTrader } from "./trading/paperTrader.js";
 import { PositionManager } from "./trading/positionManager.js";
+import { RecoveryBuyManager } from "./trading/recoveryBuyManager.js";
 import type { TradeExecutor } from "./trading/tradeExecutor.js";
 import type { Trade } from "./trading/types.js";
 import { getMintDecimals, getSolBalanceSol, getTokenBalance } from "./wallet/balances.js";
@@ -39,6 +45,15 @@ import { loadWalletKeypair } from "./wallet/keypair.js";
 interface RetainedCrashEvent {
   message: string;
   timestampMs: number;
+}
+
+interface PendingOnchainProbe {
+  timestampMs: number;
+  poolLabel: string;
+  changePercent: number;
+  immediateTickQueued: boolean;
+  priceInQuote: number;
+  preChangePriceInQuote: number | undefined;
 }
 
 const POSITION_EPSILON = 1e-12;
@@ -60,10 +75,22 @@ async function main(): Promise<void> {
   const tokenMint = new PublicKey(config.token.mint);
 
   const client = new JupiterClient(config);
+  const raydiumClient = new RaydiumTradeClient(
+    config.crashBuy.raydiumSwapBaseUrl,
+  );
   const solPrice = new SolPriceTracker(client, config);
   const live = isLiveTradingArmed(config);
   const executor: TradeExecutor = live
-    ? new LiveTrader(connection, client, config, solPrice, tokenMint, keypair, logger)
+    ? new LiveTrader(
+        connection,
+        client,
+        config,
+        solPrice,
+        tokenMint,
+        keypair,
+        logger,
+        raydiumClient,
+      )
     : new PaperTrader(
         client,
         config,
@@ -73,6 +100,7 @@ async function main(): Promise<void> {
         keypair.publicKey,
         replayPaperUsdBalance(tradesRepo, config.trading.paperBalanceUsd),
         replayPaperTokenBalance(tradesRepo),
+        raydiumClient,
       );
 
   logger.info(`Starting CYBERLEEK bot in ${executor.mode} mode`, {
@@ -99,10 +127,11 @@ async function main(): Promise<void> {
     { hasOpenPosition: () => positionManager.hasOpenPosition() },
   );
   const autoBuyManager = new AutoBuyManager(config);
+  const recoveryBuyManager = new RecoveryBuyManager(config);
   const automationEpoch = new AutomationEpoch();
   if (config.autoBuy.enabled) {
     logger.info(
-      `AUTO_BUY_ENABLED: watching for a ${config.autoBuy.dipPercent}%+ drop within ${config.autoBuy.lookbackMs}ms, then buying on the first rebound tick.`,
+      `AUTO_BUY_ENABLED: watching for a ${config.autoBuy.dipPercent}%+ drop within ${config.autoBuy.lookbackMs}ms, then requiring a ${config.autoBuy.reboundPercent}% rebound for ${config.autoBuy.reboundConfirmationMs}ms.`,
     );
     if (config.autoBuy.peakProtectionEnabled) {
       logger.info(
@@ -117,17 +146,33 @@ async function main(): Promise<void> {
   }
   const crashBuyManager = new CrashBuyManager(config);
   let autoBuyInFlight = false;
+  let recoveryBuyInFlight = false;
   let crashBuyInFlight = false;
   let crashExitInFlight = false;
   let lastCrashError: { message: string; timestampMs: number } | undefined;
   let retainedCrashEvent: RetainedCrashEvent | undefined;
+  let pendingOnchainProbe: PendingOnchainProbe | undefined;
+  if (config.recoveryBuy.enabled) {
+    logger.info(
+      `RECOVERY_BUY_ENABLED: one controlled add after a ${config.recoveryBuy.dropPercent}% dip, ${config.recoveryBuy.reboundPercent}% rebound held for ${config.recoveryBuy.confirmationMs}ms.`,
+    );
+  }
   if (config.crashBuy.enabled) {
     const sizeLimit =
       config.trading.mode === "paper"
         ? "without a PAPER dollar cap"
         : `up to $${config.crashBuy.maxUsd}`;
+    const detectionWindowMs =
+      config.crashBuy.executionMode === "raydium_direct"
+        ? config.onchain.jumpWindowMs
+        : config.crashBuy.windowMs;
     logger.info(
-      `CRASH_BUY_ENABLED: watching for a ${config.crashBuy.dropPercent}%+ drop within ${config.crashBuy.windowMs}ms, buying immediately ${sizeLimit} (${config.crashBuy.portfolioPercent}% of available).`,
+      `CRASH_BUY_ENABLED: watching for a ${config.crashBuy.dropPercent}%+ drop within ${detectionWindowMs}ms, buying immediately ${sizeLimit} (${config.crashBuy.portfolioPercent}% of available).`,
+    );
+    logger.info(
+      config.crashBuy.executionMode === "raydium_direct"
+        ? `CRASH_BUY execution: direct Raydium pool ${config.crashBuy.raydiumPoolId}, outside the Jupiter queue, with a hard maximum price.`
+        : "CRASH_BUY source is an executable Jupiter quote; a chart-only wick that disappears before the quote lands cannot trigger this path.",
     );
   }
 
@@ -148,6 +193,27 @@ async function main(): Promise<void> {
       change1m: priceFeed.history.changePercent(60_000),
       change5m: priceFeed.history.changePercent(300_000),
     });
+    const crashDecision = crashBuyManager.evaluate(
+      priceFeed.history,
+      positionManager.hasActiveCrashLot(),
+      sample.timestampMs,
+    );
+    if (
+      pendingOnchainProbe &&
+      sample.timestampMs >= pendingOnchainProbe.timestampMs
+    ) {
+      const probe = pendingOnchainProbe;
+      pendingOnchainProbe = undefined;
+      const drop = crashDecision.dropPercent?.toFixed(2) ?? "n/a";
+      const spread = crashDecision.spreadBps?.toFixed(0) ?? "n/a";
+      const estimate = crashDecision.sellWasEstimated ? " estimated-sell" : "";
+      const scheduling = probe.immediateTickQueued
+        ? "early tick queued"
+        : "used queued/backed-off tick";
+      logger.info(
+        `CRASH probe after ${probe.poolLabel} ${probe.changePercent.toFixed(1)}% (${scheduling}): executable drop ${drop}%/${config.crashBuy.dropPercent}%, spread ${spread}/${config.crashBuy.maxSpreadBps} bps, decision ${crashDecision.reason}${estimate}.`,
+      );
+    }
     const strategyEpoch = automationEpoch.capture();
     const crashLotBeforeStrategy = snapshotActiveCrashLot(positionManager);
     const latestTradeIdBeforeStrategy = crashLotBeforeStrategy
@@ -194,6 +260,7 @@ async function main(): Promise<void> {
 
     if (
       !autoBuyInFlight &&
+      !recoveryBuyInFlight &&
       !crashBuyInFlight &&
       autoBuyManager.evaluate(
         priceFeed.history,
@@ -273,16 +340,66 @@ async function main(): Promise<void> {
     }
 
     if (
+      !recoveryBuyInFlight &&
+      !autoBuyInFlight &&
+      !crashBuyInFlight &&
+      !crashExitInFlight
+    ) {
+      const recoverySignal = recoveryBuyManager.evaluate(priceFeed.history, {
+        regularCostBasis: positionManager.getRegularCostBasis(),
+        cascadeSoldTokenAmount:
+          positionManager.getCascadeCycle()?.cascadeSoldTokenAmount ?? 0,
+        addsUsed: positionManager.getRecoveryBuyCount(),
+        hasActiveCrashLot: positionManager.hasActiveCrashLot(),
+        nowMs: sample.timestampMs,
+      });
+      if (recoverySignal) {
+        recoveryBuyInFlight = true;
+        const operationEpoch = automationEpoch.capture();
+        void (async () => {
+          try {
+            const availableUsd =
+              executor instanceof PaperTrader
+                ? executor.usdBalance
+                : await computeLiveAvailableUsd(config, solBalance, solPrice);
+            if (!automationEpoch.isCurrent(operationEpoch)) return;
+            const sizeUsd = resolveAutoBuySizeUsd(
+              executor.mode,
+              availableUsd,
+              config.trading.maxTradeUsd,
+              config.recoveryBuy.portfolioPercent,
+            );
+            if (sizeUsd <= 0) {
+              logger.warn(
+                "RECOVERY_BUY signal fired but computed size was $0 - skipped.",
+              );
+              return;
+            }
+            logger.info(
+              `RECOVERY_BUY: confirmed rebound, adding $${sizeUsd.toFixed(2)} to the regular position.`,
+            );
+            await positionManager.recoveryBuy(sizeUsd);
+          } catch (err) {
+            if (!automationEpoch.isCurrent(operationEpoch)) return;
+            logger.error("RECOVERY_BUY failed", { err: String(err) });
+          } finally {
+            if (automationEpoch.isCurrent(operationEpoch)) {
+              recoveryBuyInFlight = false;
+            }
+          }
+        })();
+      }
+    }
+
+    if (
+      config.crashBuy.executionMode === "jupiter" &&
       !crashBuyInFlight &&
       !autoBuyInFlight &&
+      !recoveryBuyInFlight &&
       !crashExitInFlight &&
       !positionManager.isCrashAutomationPaused()
     ) {
-      const crashSignal = crashBuyManager.evaluate(
-        priceFeed.history,
-        positionManager.hasActiveCrashLot(),
-        sample.timestampMs,
-      );
+      const crashSignal = crashDecision;
       if (crashSignal.shouldBuy) {
         crashBuyInFlight = true;
         const operationEpoch = automationEpoch.capture();
@@ -302,8 +419,12 @@ async function main(): Promise<void> {
                   preDropPriceUsd,
                 )
               ) {
+                const freshDrop =
+                  ((preDropPriceUsd - freshSample.sellPriceUsd) /
+                    preDropPriceUsd) *
+                  100;
                 logger.warn(
-                  "CRASH_BUY signal disappeared or fresh spread was too wide - skipped after round-trip preflight.",
+                  `CRASH_BUY skipped after fresh round-trip: drop ${freshDrop.toFixed(2)}%/${config.crashBuy.dropPercent}%, spread ${(freshSample.spread * 10_000).toFixed(0)}/${config.crashBuy.maxSpreadBps} bps.`,
                 );
                 return;
               }
@@ -351,7 +472,104 @@ async function main(): Promise<void> {
     lastErrorMessage = `⚠️ price feed: ${String((err as Error)?.message ?? err)}`;
   });
 
-  const poolWatcher = await startPoolWatcherIfEnabled(config, connection, tokenMint, priceFeed, logger);
+  const handleDirectCrashProbe = (probe: PendingOnchainProbe): void => {
+    if (
+      config.crashBuy.executionMode !== "raydium_direct" ||
+      probe.poolLabel !== config.crashBuy.raydiumWatchLabel ||
+      probe.changePercent > -config.crashBuy.dropPercent ||
+      probe.preChangePriceInQuote === undefined ||
+      crashBuyInFlight ||
+      autoBuyInFlight ||
+      recoveryBuyInFlight ||
+      crashExitInFlight ||
+      positionManager.hasActiveCrashLot() ||
+      positionManager.isCrashAutomationPaused()
+    ) {
+      return;
+    }
+    crashBuyInFlight = true;
+    const operationEpoch = automationEpoch.capture();
+    logger.info(
+      `DIRECT_CRASH_BUY signal: ${probe.poolLabel} moved ${probe.changePercent.toFixed(2)}%; requesting the exact Raydium pool immediately.`,
+    );
+    void (async () => {
+      try {
+        const cachedSolUsdPrice = priceFeed.history.latest()?.solUsdPrice;
+        if (
+          cachedSolUsdPrice === undefined ||
+          !Number.isFinite(cachedSolUsdPrice) ||
+          cachedSolUsdPrice <= 0
+        ) {
+          throw new Error(
+            "Direct crash-buy skipped: no cached SOL/USD market sample yet",
+          );
+        }
+        const availableUsd = executor instanceof PaperTrader
+          ? executor.usdBalance
+          : Math.max(
+              0,
+              (await getSolBalanceSol(connection, keypair.publicKey)) -
+                config.trading.minSolReserve,
+            ) * cachedSolUsdPrice;
+        if (!automationEpoch.isCurrent(operationEpoch)) return;
+        const sizeUsd = resolveCrashBuySizeUsd(
+          executor.mode,
+          executor instanceof PaperTrader ? availableUsd : 0,
+          executor instanceof PaperTrader ? 0 : availableUsd,
+          config.crashBuy.portfolioPercent,
+          config.crashBuy.maxUsd,
+        );
+        if (sizeUsd <= 0) {
+          throw new Error("Direct crash-buy computed size is $0");
+        }
+        if (!automationEpoch.isCurrent(operationEpoch)) return;
+        const preDropPriceUsd =
+          probe.preChangePriceInQuote! * cachedSolUsdPrice;
+        const maxPriceInSol =
+          probe.preChangePriceInQuote! *
+          (1 - config.crashBuy.dropPercent / 100);
+        await positionManager.crashBuyDirect(
+          sizeUsd,
+          preDropPriceUsd,
+          cachedSolUsdPrice,
+          maxPriceInSol,
+          config.crashBuy.raydiumPoolId,
+        );
+        if (!automationEpoch.isCurrent(operationEpoch)) return;
+        lastCrashError = undefined;
+        logger.info(
+          `DIRECT_CRASH_BUY completed through Raydium for ~$${sizeUsd.toFixed(2)}.`,
+        );
+      } catch (err) {
+        if (!automationEpoch.isCurrent(operationEpoch)) return;
+        const message = String((err as Error)?.message ?? err);
+        lastCrashError = { message, timestampMs: Date.now() };
+        logger.warn("DIRECT_CRASH_BUY did not execute", { err: message });
+      } finally {
+        if (automationEpoch.isCurrent(operationEpoch)) {
+          crashBuyInFlight = false;
+        }
+      }
+    })();
+  };
+
+  const poolWatcher = await startPoolWatcherIfEnabled(
+    config,
+    connection,
+    tokenMint,
+    priceFeed,
+    logger,
+    (probe) => {
+      if (
+        !pendingOnchainProbe ||
+        Math.abs(probe.changePercent) >=
+          Math.abs(pendingOnchainProbe.changePercent)
+      ) {
+        pendingOnchainProbe = probe;
+      }
+      handleDirectCrashProbe(probe);
+    },
+  );
 
   let solBalance = 0;
   let tokenBalance = 0;
@@ -387,6 +605,7 @@ async function main(): Promise<void> {
       lastMovementMessage,
       lastErrorMessage,
       autoBuy: autoBuyManager.status(),
+      recoveryBuy: recoveryBuyManager.status(recoveryBuyInFlight),
       stopLossPercent: config.strategy.stopLossPercent,
       trailingStopPercent: config.strategy.trailingStopPercent,
       cascade: buildCascadeDashboardStatus(
@@ -435,14 +654,17 @@ async function main(): Promise<void> {
     onPaperReset: () => {
       automationEpoch.invalidate();
       autoBuyInFlight = false;
+      recoveryBuyInFlight = false;
       crashBuyInFlight = false;
       crashExitInFlight = false;
       autoBuyManager.reset();
+      recoveryBuyManager.reset();
       priceFeed.resetSession();
       lastMovementMessage = undefined;
       lastErrorMessage = undefined;
       lastCrashError = undefined;
       retainedCrashEvent = undefined;
+      pendingOnchainProbe = undefined;
     },
     onTradeCompleted: (trade, crashLotBefore) => {
       retainedCrashEvent = retainCrashReductionEvent(
@@ -670,7 +892,7 @@ function buildCrashBuyDashboardStatus(
   return {
     phase: "ARMED",
     ...pnlSummary,
-    detail: `trigger -${config.crashBuy.dropPercent}% / ${Math.round(config.crashBuy.windowMs / 1000)}s, size ${config.crashBuy.portfolioPercent}% (${config.trading.mode === "paper" ? "no dollar cap in PAPER" : `max $${config.crashBuy.maxUsd}`})`,
+    detail: `trigger -${config.crashBuy.dropPercent}% / ${Math.round((config.crashBuy.executionMode === "raydium_direct" ? config.onchain.jumpWindowMs : config.crashBuy.windowMs) / 1000)}s via ${config.crashBuy.executionMode === "raydium_direct" ? "Raydium direct" : "Jupiter"}, size ${config.crashBuy.portfolioPercent}% (${config.trading.mode === "paper" ? "no dollar cap in PAPER" : `max $${config.crashBuy.maxUsd}`})`,
   };
 }
 
@@ -701,8 +923,9 @@ function warnAboutStaleEnvFile(logger: Logger): void {
 /**
  * Off by default (ONCHAIN_WATCH_ENABLED=false). When on, watches each
  * configured pool's two reserve accounts directly over RPC as a fast
- * "something moved" trigger and pokes PriceFeed to check sooner - it never
- * decides a trade itself, only how soon the real Jupiter-quote check runs.
+ * "something moved" trigger and pokes PriceFeed to check sooner. In direct
+ * crash mode the negative move may also start a pinned Raydium quote whose
+ * hard price ceiling decides whether execution is still allowed.
  */
 async function startPoolWatcherIfEnabled(
   config: ReturnType<typeof getConfig>,
@@ -710,6 +933,7 @@ async function startPoolWatcherIfEnabled(
   tokenMint: PublicKey,
   priceFeed: PriceFeed,
   logger: Logger,
+  onProbe?: (probe: PendingOnchainProbe) => void,
 ): Promise<PoolWatcher | undefined> {
   if (!config.onchain.watchEnabled) return undefined;
   if (config.onchain.watchPools.length === 0) {
@@ -737,8 +961,16 @@ async function startPoolWatcherIfEnabled(
     config.onchain.jumpWindowMs,
     config.onchain.jumpPercent,
   );
-  watcher.on("jump", (event: { poolLabel: string; changePercent: number }) => {
+  watcher.on("jump", (event: PoolJumpEvent) => {
     const triggered = priceFeed.triggerImmediateTick();
+    onProbe?.({
+      timestampMs: Date.now(),
+      poolLabel: event.poolLabel,
+      changePercent: event.changePercent,
+      immediateTickQueued: triggered,
+      priceInQuote: event.priceInQuote,
+      preChangePriceInQuote: event.preChangePriceInQuote,
+    });
     const outcome = triggered
       ? "triggering an early price check"
       : "price check already queued/in progress or backing off; no duplicate check added";

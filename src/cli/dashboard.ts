@@ -2,6 +2,7 @@ import type { CostBasisState } from "../strategy/costBasis.js";
 import type { PositionEvaluation } from "../strategy/evaluatePosition.js";
 import type { PriceSample } from "../market/types.js";
 import type { AutoBuyStatus } from "../trading/autoBuyManager.js";
+import type { RecoveryBuyStatus } from "../trading/recoveryBuyManager.js";
 import { colorize, colors, pct, signColor, usd } from "./format.js";
 
 export interface DashboardEvent {
@@ -89,6 +90,7 @@ export interface DashboardState {
    *  this survives the once-a-second screen clear so it's actually readable. */
   lastErrorMessage: string | undefined;
   autoBuy: AutoBuyStatus;
+  recoveryBuy: RecoveryBuyStatus;
   stopLossPercent: number;
   trailingStopPercent: number;
   cascade?: CascadeDashboardStatus;
@@ -139,6 +141,7 @@ export function formatDashboard(s: DashboardState): string {
   const strategyStatusLines = [
     ...(s.cascade ? formatCascadeStatusLines(s.cascade) : []),
     ...(s.profitLock ? formatProfitLockStatusLines(s.profitLock) : []),
+    formatRecoveryBuyStatusLine(s.recoveryBuy),
     ...(s.crashBuy ? formatCrashBuyStatusLines(s.crashBuy, s.tokenSymbol) : []),
   ];
   if (strategyStatusLines.length > 0) {
@@ -327,6 +330,40 @@ export function formatCrashBuyStatusLines(
   return lines;
 }
 
+export function formatRecoveryBuyStatusLine(status: RecoveryBuyStatus): string {
+  const color =
+    status.phase === "TRIGGERED" || status.phase === "BUYING"
+      ? colors.GREEN
+      : status.phase === "BLOCKED"
+        ? colors.RED
+        : status.phase === "OFF" || status.phase === "MAXED"
+          ? colors.DIM
+          : colors.YELLOW;
+  const parts = [
+    `Recovery-buy: ${colorize(status.phase, color)}`,
+    `adds ${status.addsUsed}/${status.maxAdds}`,
+    `size ${formatPlainPercent(status.plannedPortfolioPercent)}`,
+  ];
+  if (status.lossPercent !== undefined) {
+    parts.push(`position ${pct(-status.lossPercent)}`);
+  }
+  if (status.dropPercentFromHigh !== undefined) {
+    parts.push(
+      `drop ${formatPlainPercent(status.dropPercentFromHigh)}/${formatPlainPercent(status.dropTriggerPercent)}`,
+    );
+  }
+  if (status.reboundPercentFromLow !== undefined) {
+    parts.push(
+      `rebound ${formatPlainPercent(status.reboundPercentFromLow)}/${formatPlainPercent(status.reboundTriggerPercent)}`,
+    );
+  }
+  if (status.confirmationProgressPercent !== undefined) {
+    parts.push(`confirm ${formatProgress(status.confirmationProgressPercent)}`);
+  }
+  if (status.reason) parts.push(status.reason);
+  return parts.join(" | ");
+}
+
 function crashPhaseColor(phase: CrashBuyDashboardPhase): string {
   switch (phase) {
     case "ACTIVE":
@@ -367,7 +404,15 @@ function formatAutoBuyLine(status: AutoBuyStatus): string {
     ? `, ${colorize("VOL", colors.YELLOW)} ${status.realizedVolatilityPercent?.toFixed(2)}%`
     : "";
   if (status.watching) {
-    return `Auto-buy: ${colorize("WATCHING for rebound", colors.YELLOW)} (dip threshold ${status.effectiveDipPercent.toFixed(2)}%${peakLabel}${volatilityLabel}, low so far: ${usd(status.watchingLowUsd, 8)})`;
+    const rebound =
+      status.reboundPercentFromLow === undefined
+        ? ""
+        : `, rebound ${status.reboundPercentFromLow.toFixed(2)}%/${status.requiredReboundPercent.toFixed(2)}%`;
+    const confirmation =
+      status.reboundConfirmationProgressPercent === undefined
+        ? ""
+        : `, confirm ${formatProgress(status.reboundConfirmationProgressPercent)}`;
+    return `Auto-buy: ${colorize("WATCHING for rebound", colors.YELLOW)} (dip threshold ${status.effectiveDipPercent.toFixed(2)}%${peakLabel}${volatilityLabel}, low so far: ${usd(status.watchingLowUsd, 8)}${rebound}${confirmation})`;
   }
   return `Auto-buy: ON, watching for a ${status.effectiveDipPercent.toFixed(2)}% dip${peakLabel}${volatilityLabel} (currently ${pct(status.dropPercentFromHigh ? -status.dropPercentFromHigh : undefined)} from recent high)`;
 }

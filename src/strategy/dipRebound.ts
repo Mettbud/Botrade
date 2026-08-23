@@ -5,13 +5,28 @@ export interface DipWatchState {
   lowestPriceUsd: number;
   /** Effective dip threshold that armed the current watch. */
   armedDipPercent: number;
+  /** When this dip watch started; used to expire stale rebounds. */
+  armedAtMs: number;
+  /** When the configured rebound first held above its trigger. */
+  reboundStartedAtMs?: number;
 }
 
 export const IDLE_DIP_WATCH: DipWatchState = {
   watching: false,
   lowestPriceUsd: 0,
   armedDipPercent: 0,
+  armedAtMs: 0,
 };
+
+export interface DipReboundOptions {
+  nowMs: number;
+  /** Required rise from the observed low. Zero preserves legacy first-uptick behavior. */
+  reboundPercent: number;
+  /** How long the rebound must remain above its trigger. */
+  confirmationMs: number;
+  /** Expire an armed dip that never confirms; zero disables expiry. */
+  timeoutMs: number;
+}
 
 export interface DipReboundResult {
   state: DipWatchState;
@@ -25,8 +40,8 @@ export interface DipReboundResult {
  * Watches for CYBERLEEK's known pattern: a sudden, extreme wick down
  * (someone dumping to re-enter cheaper) followed by an immediate bounce.
  * Not a prediction - a specific, honest heuristic: once price has dropped
- * `dipPercent`+ from its recent high, wait until it ticks up even once from
- * its lowest point since then, and treat that as the buy signal. It will
+ * `dipPercent`+ from its recent high, wait for the configured rebound from
+ * its lowest point and optional confirmation period. It will
  * sometimes buy into a fall that keeps going; there is no way to know in
  * advance which dip is "the" dip.
  */
@@ -35,6 +50,12 @@ export function updateDipWatch(
   currentPriceUsd: number,
   recentHighUsd: number | undefined,
   dipPercent: number,
+  options: DipReboundOptions = {
+    nowMs: 0,
+    reboundPercent: 0,
+    confirmationMs: 0,
+    timeoutMs: 0,
+  },
 ): DipReboundResult {
   if (!state.watching) {
     if (recentHighUsd === undefined || recentHighUsd <= 0) {
@@ -49,12 +70,24 @@ export function updateDipWatch(
           watching: true,
           lowestPriceUsd: currentPriceUsd,
           armedDipPercent: dipPercent,
+          armedAtMs: options.nowMs,
         },
         shouldBuy: false,
         dropPercentFromHigh,
       };
     }
     return { state, shouldBuy: false, dropPercentFromHigh };
+  }
+
+  if (
+    options.timeoutMs > 0 &&
+    options.nowMs - state.armedAtMs >= options.timeoutMs
+  ) {
+    return {
+      state: IDLE_DIP_WATCH,
+      shouldBuy: false,
+      dropPercentFromHigh: undefined,
+    };
   }
 
   // Volatility/peak protection may tighten while a dip is already being
@@ -80,16 +113,53 @@ export function updateDipWatch(
     state = { ...state, armedDipPercent: dipPercent };
   }
 
-  // Watching: the first uptick from the lowest point seen is the signal.
-  if (currentPriceUsd > state.lowestPriceUsd) {
-    return { state: IDLE_DIP_WATCH, shouldBuy: true, dropPercentFromHigh: undefined };
+  if (currentPriceUsd < state.lowestPriceUsd) {
+    return {
+      state: {
+        ...state,
+        lowestPriceUsd: currentPriceUsd,
+        reboundStartedAtMs: undefined,
+      },
+      shouldBuy: false,
+      dropPercentFromHigh: undefined,
+    };
+  }
+
+  const reboundTriggerPrice =
+    state.lowestPriceUsd * (1 + Math.max(0, options.reboundPercent) / 100);
+  const reboundReached =
+    options.reboundPercent <= 0
+      ? currentPriceUsd > state.lowestPriceUsd
+      : currentPriceUsd >= reboundTriggerPrice;
+  if (!reboundReached) {
+    return {
+      state: { ...state, reboundStartedAtMs: undefined },
+      shouldBuy: false,
+      dropPercentFromHigh: undefined,
+    };
+  }
+
+  if (options.confirmationMs <= 0) {
+    return {
+      state: IDLE_DIP_WATCH,
+      shouldBuy: true,
+      dropPercentFromHigh: undefined,
+    };
+  }
+
+  const reboundStartedAtMs = state.reboundStartedAtMs ?? options.nowMs;
+  if (options.nowMs - reboundStartedAtMs >= options.confirmationMs) {
+    return {
+      state: IDLE_DIP_WATCH,
+      shouldBuy: true,
+      dropPercentFromHigh: undefined,
+    };
   }
 
   return {
     state: {
-      watching: true,
-      lowestPriceUsd: Math.min(state.lowestPriceUsd, currentPriceUsd),
-      armedDipPercent: state.armedDipPercent,
+      ...state,
+      reboundStartedAtMs,
     },
     shouldBuy: false,
     dropPercentFromHigh: undefined,

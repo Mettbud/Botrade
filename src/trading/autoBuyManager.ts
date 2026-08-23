@@ -14,6 +14,9 @@ export interface AutoBuyStatus {
   dropPercentFromHigh: number | undefined;
   /** The low being tracked while watching, waiting for an uptick past it. */
   watchingLowUsd: number | undefined;
+  reboundPercentFromLow: number | undefined;
+  reboundConfirmationProgressPercent: number | undefined;
+  requiredReboundPercent: number;
   /** Dip threshold currently applied after peak protection is considered. */
   effectiveDipPercent: number;
   peakProtectionActive: boolean;
@@ -45,6 +48,8 @@ export class AutoBuyManager {
   private recentRunUpPercent: number | undefined;
   private volatilityProtectionActive = false;
   private realizedVolatilityPercent: number | undefined;
+  private lastEvaluationAtMs = 0;
+  private lastEvaluatedPriceUsd: number | undefined;
 
   constructor(private readonly config: BotConfig) {
     this.effectiveDipPercent = config.autoBuy.dipPercent;
@@ -60,6 +65,8 @@ export class AutoBuyManager {
     this.recentRunUpPercent = undefined;
     this.volatilityProtectionActive = false;
     this.realizedVolatilityPercent = undefined;
+    this.lastEvaluationAtMs = 0;
+    this.lastEvaluatedPriceUsd = undefined;
   }
 
   /**
@@ -74,6 +81,7 @@ export class AutoBuyManager {
     nowMs: number,
     lastSellPriceUsd?: number,
   ): boolean {
+    this.lastEvaluationAtMs = nowMs;
     const blockedByPosition = hasOpenPosition && !this.config.autoBuy.allowAveraging;
     if (!this.config.autoBuy.enabled || blockedByPosition) {
       this.state = IDLE_DIP_WATCH;
@@ -82,6 +90,7 @@ export class AutoBuyManager {
 
     const latest = history.latest();
     if (!latest) return false;
+    this.lastEvaluatedPriceUsd = latest.sellPriceUsd;
 
     this.recentRunUpPercent = history.maxRunUpPercent(
       this.config.autoBuy.peakLookbackMs,
@@ -119,6 +128,12 @@ export class AutoBuyManager {
       latest.sellPriceUsd,
       recentHigh,
       this.effectiveDipPercent,
+      {
+        nowMs,
+        reboundPercent: this.config.autoBuy.reboundPercent,
+        confirmationMs: this.config.autoBuy.reboundConfirmationMs,
+        timeoutMs: this.config.autoBuy.reboundTimeoutMs,
+      },
     );
     this.state = result.state;
     this.lastDropPercentFromHigh = result.dropPercentFromHigh;
@@ -138,11 +153,30 @@ export class AutoBuyManager {
   }
 
   status(): AutoBuyStatus {
+    const reboundConfirmationProgressPercent =
+      this.state.watching && this.state.reboundStartedAtMs !== undefined
+        ? this.config.autoBuy.reboundConfirmationMs <= 0
+          ? 100
+          : Math.min(
+              100,
+              ((this.lastEvaluationAtMs - this.state.reboundStartedAtMs) /
+                this.config.autoBuy.reboundConfirmationMs) *
+                100,
+            )
+        : undefined;
     return {
       enabled: this.config.autoBuy.enabled,
       watching: this.state.watching,
       dropPercentFromHigh: this.lastDropPercentFromHigh,
       watchingLowUsd: this.state.watching ? this.state.lowestPriceUsd : undefined,
+      reboundPercentFromLow:
+        this.state.watching && this.lastEvaluatedPriceUsd !== undefined
+          ? ((this.lastEvaluatedPriceUsd - this.state.lowestPriceUsd) /
+              this.state.lowestPriceUsd) *
+            100
+          : undefined,
+      reboundConfirmationProgressPercent,
+      requiredReboundPercent: this.config.autoBuy.reboundPercent,
       effectiveDipPercent: this.effectiveDipPercent,
       peakProtectionActive: this.peakProtectionActive,
       recentRunUpPercent: this.recentRunUpPercent,

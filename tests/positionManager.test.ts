@@ -781,3 +781,48 @@ describe("PositionManager - reset", () => {
     expect(positionManager.hasOpenPosition()).toBe(false);
   });
 });
+
+describe("PositionManager - recovery buy", () => {
+  it("allows one add, persists its count, and rejects a second add", async () => {
+    const {
+      config,
+      positionManager,
+      executor,
+      tradesRepo,
+      trailingStateRepo,
+    } = setup({
+      RECOVERY_BUY_ENABLED: "true",
+      RECOVERY_BUY_MAX_ADDS_PER_POSITION: "1",
+    });
+    executor.price = 1;
+    await positionManager.manualBuy(100);
+    await positionManager.recoveryBuy(10);
+    expect(positionManager.getRecoveryBuyCount()).toBe(1);
+    await expect(positionManager.recoveryBuy(10)).rejects.toThrow(/limit/);
+
+    const restarted = new PositionManager(
+      executor,
+      tradesRepo,
+      config,
+      createLogger("error"),
+      trailingStateRepo,
+    );
+    expect(restarted.getRecoveryBuyCount()).toBe(1);
+    await expect(restarted.recoveryBuy(10)).rejects.toThrow(/limit/);
+  });
+
+  it("rejects recovery averaging after any cascade amount was sold", async () => {
+    const { positionManager, executor } = setup({
+      RECOVERY_BUY_ENABLED: "true",
+      TAKE_PROFIT_MODE: "cascade",
+      CASCADE_TAKE_PROFIT_PERCENT: "5",
+      CASCADE_TAKE_PROFIT_SELL_PERCENT: "20",
+    });
+    executor.price = 1;
+    await positionManager.manualBuy(100);
+    executor.price = 1.05;
+    await positionManager.handlePriceSample(1.05, 0, Date.now());
+
+    await expect(positionManager.recoveryBuy(10)).rejects.toThrow(/cascade payout/);
+  });
+});

@@ -148,9 +148,11 @@ that changed halfway through the process.
 By default the bot never buys on its own - `buy` is the only way in. Set
 `AUTO_BUY_ENABLED=true` to change that: the bot then watches for
 `AUTO_BUY_DIP_PERCENT`% (default 50%) drop within `AUTO_BUY_DIP_LOOKBACK_MS`
-(default 60s), and buys on the very first tick price ticks up from its low
-after that. This targets a pattern CYBERLEEK specifically shows - a sudden,
-extreme wick down that immediately bounces.
+(default 60s). It then requires `AUTO_BUY_REBOUND_PERCENT`% (default 1%)
+from the observed low to remain present for
+`AUTO_BUY_REBOUND_CONFIRMATION_MS` (default 8s). An unconfirmed setup expires
+after `AUTO_BUY_REBOUND_TIMEOUT_MS` (default 30s). This avoids treating one
+noisy green tick as a real rebound.
 
 The configured dip is now the calm-market floor, not always the final
 threshold. Two protections can widen it automatically, and the strictest
@@ -195,6 +197,13 @@ way; raise it for deliberate breathing room between purchases.
 The dashboard shows `Auto-buy: OFF` / `ON, watching for a dip (...)` /
 `WATCHING for rebound (...)`, the effective threshold, and `PEAK`/`VOL`
 labels whenever either protection is actively widening it.
+
+`RECOVERY_BUY_ENABLED=true` is a separate, limited averaging rule for an
+already-open regular position. The ready profile allows only one 5%-of-balance
+addition, only while the position is between -4% and -12%, after an 8% drop
+and a 3% rebound held for 8 seconds. It is blocked after any cascade payout
+and while an isolated crash lot is active. This does not turn unrestricted
+`AUTO_BUY_ALLOW_AVERAGING` back on.
 
 **Position sizing is the same formula on both modes, with one guardrail
 that only applies to LIVE.** Every auto-buy spends
@@ -244,18 +253,24 @@ low-liquidity token the cumulative cost can still be material.
 
 ### Optional: crash-buy (very fast drop, off by default)
 
-A separate, faster opt-in from `AUTO_BUY_ENABLED` above:
-`CRASH_BUY_ENABLED=true` watches the live executable USD price history for
-a very sharp move - price dropping `CRASH_BUY_DROP_PERCENT`% (default 20%)
-within `CRASH_BUY_WINDOW_MS` (default 12000ms) - and buys **immediately**,
-with no dip-then-rebound wait like normal auto-buy. It still only ever
-buys through a real, fresh Jupiter quote - never a raw on-chain swap - and
-at most one isolated crash lot at a time. A regular position may coexist
-with it. Detection granularity is bounded by how often a real
-price sample actually lands (`PRICE_POLL_INTERVAL_MS`, sped up by
-`ONCHAIN_WATCH_ENABLED` jumps if that's also on) - it isn't a promise of
-true sub-poll-interval detection, just the window the drop is measured
-over once a sample does land.
+A separate, faster opt-in from `AUTO_BUY_ENABLED` above has two execution
+modes:
+
+- `CRASH_BUY_EXECUTION_MODE=jupiter` watches executable quote history over
+  `CRASH_BUY_WINDOW_MS` and executes through Jupiter.
+- `CRASH_BUY_EXECUTION_MODE=raydium_direct` reacts to the named watched vault
+  (`CRASH_BUY_RAYDIUM_WATCH_LABEL`) and requests a swap directly through the
+  single pinned pool `CRASH_BUY_RAYDIUM_POOL_ID`. The crash order does not enter
+  the Jupiter request queue and uses the already-cached SOL/USD sample.
+
+Both modes require a `CRASH_BUY_DROP_PERCENT`% move (default 20%), buy without
+a rebound wait, and allow at most one isolated crash lot. In direct mode the
+returned route must contain exactly the configured pool, price impact must pass
+the normal guard, and the worst slippage-adjusted execution price may not exceed
+the 20%-down trigger price. If the wick has already disappeared, the order is
+rejected instead of chasing it higher. No bot can purchase a historical price
+after liquidity has moved; direct mode reduces delay but does not guarantee a
+fill on a millisecond wick.
 
 Sizing is deliberately larger than a normal auto-buy, since the whole
 point is catching a rare, genuine crash - a $1 nibble wouldn't be worth
@@ -265,7 +280,7 @@ without a dollar cap. LIVE uses the SOL balance above `MIN_SOL_RESERVE`,
 converted to USD, and remains hard-capped by `CRASH_BUY_MAX_USD` (default
 $50).
 
-Also gated by `CRASH_BUY_MAX_SPREAD_BPS` (default 500 = 5%): a genuine
+Jupiter mode is also gated by `CRASH_BUY_MAX_SPREAD_BPS` (default 500 = 5%): a genuine
 crash naturally widens spread, so this is deliberately looser than normal
 trading's tolerance - it only rejects the extreme, pathological case (a
 near-drained/rugged pool), not ordinary crash volatility.
@@ -293,11 +308,12 @@ faster channel: it subscribes directly to a pool's two reserve accounts
 over RPC (`connection.onAccountChange`) and flags a fast price move the
 instant it lands on-chain, instead of waiting for the next scheduled poll.
 
-**This never replaces Jupiter for pricing or trading** - it only makes the
-bot check Jupiter sooner. Every buy/sell is still decided from a real,
-fresh Jupiter quote; the pool watch is just a faster alarm bell. It also
-only understands simple constant-product pools (reserves = two SPL token
-account balances) - not bin-based AMMs like Meteora DLMM.
+In `jupiter` crash mode this is only a faster alarm which queues an early
+Jupiter check. In `raydium_direct` mode, the configured negative jump may start
+a direct Raydium order. That order is still validated against a fresh Raydium
+compute response, the exact pool ID and a hard maximum price before it is
+signed. The watcher understands simple reserve-based pools, not bin-based AMMs
+like Meteora DLMM.
 
 Configure pools to watch in `WATCH_POOLS`:
 ```
@@ -438,6 +454,9 @@ functions with no I/O, which is what `tests/` exercises directly.
   `prioritizationFeeLamports.priorityLevelWithMaxLamports`, Jupiter's
   current-recommended way to size compute budget and priority fee instead
   of hand-rolling `ComputeBudgetProgram` instructions.
+- **Raydium Trade API**: direct crash mode uses `compute/swap-base-in` followed
+  by `transaction/swap-base-in`, pins the response to one configured CPMM pool,
+  then signs and broadcasts the returned versioned transaction locally.
 - **Solana SDK**: `@solana/web3.js` (v1) + `@solana/spl-token`. Newer
   `@solana/kit` exists, but Jupiter's own official examples and most
   ecosystem tooling still build on `@solana/web3.js`'s `Keypair` /
@@ -489,12 +508,10 @@ of `panic` is "get me out now."
 
 ## Limitations, honestly
 
-- Price monitoring is quote-based polling (`PRICE_POLL_INTERVAL_MS`,
-  1-3s by default), not a raw on-chain websocket feed of pool state. A true
-  websocket feed would need pool discovery/decoding logic specific to
-  whichever AMM CYBERLEEK trades on, which is more fragile than a
-  well-throttled real quote and was not worth the risk for v1 — the
-  interval is easy to lower if your RPC/API limits allow it.
+- The normal price feed is quote-based polling. Direct crash mode additionally
+  watches configured pool vaults over Solana websocket RPC, but still needs a
+  Raydium compute/build round trip and on-chain confirmation. A wick can vanish
+  before those complete; the hard maximum price then safely rejects the buy.
 - Buy/sell counts, on-chain volume and whale-trade detection are not
   implemented — they need a dedicated transaction indexer this bot doesn't
   have, and it seemed worse to fake them than to leave them out.

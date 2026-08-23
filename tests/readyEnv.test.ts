@@ -29,14 +29,24 @@ describe("CYBERLEEK.env.ready", () => {
       trailingStopPercent: 12,
     });
     expect(config.autoBuy).toMatchObject({
+      reboundPercent: 1,
+      reboundConfirmationMs: 8_000,
       peakDipPercent: 6,
       volatilityMultiplier: 1.5,
       volatilityMaxDipPercent: 8,
       allowAveraging: false,
       minGapMs: 60_000,
     });
+    expect(config.recoveryBuy).toMatchObject({
+      enabled: true,
+      dropPercent: 8,
+      reboundPercent: 3,
+      maxAddsPerPosition: 1,
+    });
     expect(config.crashBuy).toMatchObject({
       enabled: true,
+      executionMode: "raydium_direct",
+      raydiumPoolId: "G8kgi7aUpeX8EVR8VMkrth9SKEv5BietWC33UjAiiMGh",
       windowMs: 12_000,
       statusHoldMs: 60_000,
     });

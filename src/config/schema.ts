@@ -171,6 +171,10 @@ const rawEnvSchema = z.object({
   // before the bot starts watching for a rebound to buy into.
   AUTO_BUY_DIP_PERCENT: numFromString(50),
   AUTO_BUY_DIP_LOOKBACK_MS: numFromString(60_000),
+  // A dip only becomes a buy after a meaningful rebound holds long enough.
+  AUTO_BUY_REBOUND_PERCENT: percentFromString(1),
+  AUTO_BUY_REBOUND_CONFIRMATION_MS: nonnegativeMillisecondsFromString(8_000),
+  AUTO_BUY_REBOUND_TIMEOUT_MS: nonnegativeMillisecondsFromString(30_000),
   // A 2% dip is useful in calm trading but too sensitive immediately after
   // a pump. When the low-to-high run-up crosses this threshold inside the
   // peak lookback, require the wider peak dip before watching for a rebound.
@@ -203,15 +207,32 @@ const rawEnvSchema = z.object({
     .default("true")
     .transform((v) => v.trim().toLowerCase() === "true"),
 
+  // One controlled add to an existing regular position after a deeper dip
+  // has produced a confirmed rebound. This is deliberately separate from
+  // unrestricted averaging and never operates after a cascade payout.
+  RECOVERY_BUY_ENABLED: boolFromString,
+  RECOVERY_BUY_DROP_PERCENT: percentFromString(8),
+  RECOVERY_BUY_LOOKBACK_MS: positiveMillisecondsFromString(300_000),
+  RECOVERY_BUY_REBOUND_PERCENT: percentFromString(3),
+  RECOVERY_BUY_CONFIRMATION_MS: nonnegativeMillisecondsFromString(8_000),
+  RECOVERY_BUY_TIMEOUT_MS: nonnegativeMillisecondsFromString(60_000),
+  RECOVERY_BUY_PORTFOLIO_PERCENT: percentFromString(5),
+  RECOVERY_BUY_MAX_ADDS_PER_POSITION: boundedIntegerFromString(1, 1, 10),
+  RECOVERY_BUY_MAX_SPREAD_BPS: numFromString(100),
+  RECOVERY_BUY_MIN_LOSS_PERCENT: percentFromString(4),
+  RECOVERY_BUY_MAX_LOSS_PERCENT: percentFromString(12),
+
   // Off by default - a deliberate, separate opt-in from AUTO_BUY. Detects a
-  // very fast, sharp drop (CRASH_BUY_DROP_PERCENT within CRASH_BUY_WINDOW_MS,
-  // measured on the live executable USD price history) and buys immediately
-  // instead of waiting for a dip->rebound like normal auto-buy - still
-  // always through a real Jupiter quote, never a raw on-chain swap. At most
-  // one isolated crash lot can be active. Sized as a real chunk on purpose (see
+  // very fast, sharp drop and buys immediately instead of waiting for a
+  // dip->rebound. `jupiter` uses executable quote history; `raydium_direct`
+  // reacts to the watched vaults and sends through one explicitly pinned pool.
+  // At most one isolated crash lot can be active. Sized as a real chunk (see
   // CRASH_BUY_PORTFOLIO_PERCENT/CRASH_BUY_MAX_USD) since the whole point is
   // to catch a real, rare crash - a $1 nibble wouldn't be worth chasing it for.
   CRASH_BUY_ENABLED: boolFromString,
+  CRASH_BUY_EXECUTION_MODE: z
+    .enum(["jupiter", "raydium_direct"])
+    .default("jupiter"),
   CRASH_BUY_DROP_PERCENT: numFromString(20),
   CRASH_BUY_WINDOW_MS: positiveMillisecondsFromString(12_000),
   // Hard USD ceiling for a single LIVE crash-buy. PAPER intentionally ignores
@@ -232,6 +253,13 @@ const rawEnvSchema = z.object({
   // ACTIVE stays visible until the lot exits. After that, keep the last
   // crash event on the dashboard for this long so it cannot flash by unseen.
   CRASH_BUY_STATUS_HOLD_MS: positiveMillisecondsFromString(60_000),
+  CRASH_BUY_RAYDIUM_POOL_ID: z.string().default(""),
+  CRASH_BUY_RAYDIUM_WATCH_LABEL: z.string().default(""),
+  RAYDIUM_SWAP_BASE_URL: z
+    .string()
+    .url()
+    .default("https://transaction-v1.raydium.io"),
+  RAYDIUM_PRIORITY_FEE_MICROLAMPORTS: numFromString(50_000),
 
   // Off by default. Watches raw pool reserve accounts directly over RPC as
   // a fast "something moved" trigger - never the price a trade is decided
@@ -271,6 +299,25 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
   ) {
     throw new Error(
       "CRASH_BUY_WINDOW_MS must be at least PRICE_POLL_INTERVAL_MS when crash-buy is enabled",
+    );
+  }
+  if (
+    raw.RECOVERY_BUY_ENABLED &&
+    raw.RECOVERY_BUY_MIN_LOSS_PERCENT > raw.RECOVERY_BUY_MAX_LOSS_PERCENT
+  ) {
+    throw new Error(
+      "RECOVERY_BUY_MIN_LOSS_PERCENT cannot exceed RECOVERY_BUY_MAX_LOSS_PERCENT",
+    );
+  }
+  if (
+    raw.CRASH_BUY_ENABLED &&
+    raw.CRASH_BUY_EXECUTION_MODE === "raydium_direct" &&
+    (!raw.ONCHAIN_WATCH_ENABLED ||
+      !raw.CRASH_BUY_RAYDIUM_POOL_ID.trim() ||
+      !raw.CRASH_BUY_RAYDIUM_WATCH_LABEL.trim())
+  ) {
+    throw new Error(
+      "raydium_direct crash-buy requires ONCHAIN_WATCH_ENABLED=true, CRASH_BUY_RAYDIUM_POOL_ID and CRASH_BUY_RAYDIUM_WATCH_LABEL",
     );
   }
   if (
@@ -367,6 +414,9 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       enabled: raw.AUTO_BUY_ENABLED,
       dipPercent: raw.AUTO_BUY_DIP_PERCENT,
       lookbackMs: raw.AUTO_BUY_DIP_LOOKBACK_MS,
+      reboundPercent: raw.AUTO_BUY_REBOUND_PERCENT,
+      reboundConfirmationMs: raw.AUTO_BUY_REBOUND_CONFIRMATION_MS,
+      reboundTimeoutMs: raw.AUTO_BUY_REBOUND_TIMEOUT_MS,
       peakProtectionEnabled: raw.AUTO_BUY_PEAK_PROTECTION_ENABLED,
       peakLookbackMs: raw.AUTO_BUY_PEAK_LOOKBACK_MS,
       peakRunUpPercent: raw.AUTO_BUY_PEAK_RUNUP_PERCENT,
@@ -380,8 +430,22 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       minGapMs: raw.AUTO_BUY_MIN_GAP_MS,
       requireBelowLastSell: raw.AUTO_BUY_REQUIRE_BELOW_LAST_SELL,
     },
+    recoveryBuy: {
+      enabled: raw.RECOVERY_BUY_ENABLED,
+      dropPercent: raw.RECOVERY_BUY_DROP_PERCENT,
+      lookbackMs: raw.RECOVERY_BUY_LOOKBACK_MS,
+      reboundPercent: raw.RECOVERY_BUY_REBOUND_PERCENT,
+      confirmationMs: raw.RECOVERY_BUY_CONFIRMATION_MS,
+      timeoutMs: raw.RECOVERY_BUY_TIMEOUT_MS,
+      portfolioPercent: raw.RECOVERY_BUY_PORTFOLIO_PERCENT,
+      maxAddsPerPosition: raw.RECOVERY_BUY_MAX_ADDS_PER_POSITION,
+      maxSpreadBps: raw.RECOVERY_BUY_MAX_SPREAD_BPS,
+      minLossPercent: raw.RECOVERY_BUY_MIN_LOSS_PERCENT,
+      maxLossPercent: raw.RECOVERY_BUY_MAX_LOSS_PERCENT,
+    },
     crashBuy: {
       enabled: raw.CRASH_BUY_ENABLED,
+      executionMode: raw.CRASH_BUY_EXECUTION_MODE,
       dropPercent: raw.CRASH_BUY_DROP_PERCENT,
       windowMs: raw.CRASH_BUY_WINDOW_MS,
       maxUsd: raw.CRASH_BUY_MAX_USD,
@@ -389,6 +453,11 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       reboundTolerancePercent: raw.CRASH_BUY_REBOUND_TOLERANCE_PERCENT,
       maxSpreadBps: raw.CRASH_BUY_MAX_SPREAD_BPS,
       statusHoldMs: raw.CRASH_BUY_STATUS_HOLD_MS,
+      raydiumPoolId: raw.CRASH_BUY_RAYDIUM_POOL_ID,
+      raydiumWatchLabel: raw.CRASH_BUY_RAYDIUM_WATCH_LABEL,
+      raydiumSwapBaseUrl: raw.RAYDIUM_SWAP_BASE_URL,
+      raydiumPriorityFeeMicroLamports:
+        raw.RAYDIUM_PRIORITY_FEE_MICROLAMPORTS,
     },
     onchain: {
       watchEnabled: raw.ONCHAIN_WATCH_ENABLED,

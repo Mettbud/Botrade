@@ -6,10 +6,20 @@ import { getQuote } from "../jupiter/quote.js";
 import { buildSwapTransaction } from "../jupiter/swap.js";
 import type { Logger } from "../logger/index.js";
 import type { SolPriceTracker } from "../market/solPrice.js";
+import {
+  RaydiumTradeClient,
+  validateDirectCrashQuote,
+} from "../raydium/client.js";
+import { signAndSendRaydiumTransactions } from "../raydium/execute.js";
 import { getSwapActuals } from "../solana/txAnalysis.js";
 import { getMintDecimals, getSolBalanceSol, getTokenBalance } from "../wallet/balances.js";
 import { checkMaxTradeSize, checkPriceImpact, checkSlippage, checkSolReserve } from "./riskGuards.js";
-import type { BuyParams, SellParams, TradeExecutor } from "./tradeExecutor.js";
+import type {
+  BuyParams,
+  DirectCrashBuyParams,
+  SellParams,
+  TradeExecutor,
+} from "./tradeExecutor.js";
 import type { Trade } from "./types.js";
 
 const SOL_DECIMALS = 9;
@@ -33,6 +43,7 @@ export class LiveTrader implements TradeExecutor {
     private readonly tokenMint: PublicKey,
     private readonly keypair: Keypair,
     private readonly logger: Logger,
+    private readonly raydiumClient?: RaydiumTradeClient,
   ) {
     assertLiveTradingSafe(config);
   }
@@ -200,6 +211,106 @@ export class LiveTrader implements TradeExecutor {
     if (!slippageCheck.allowed) throw new Error(slippageCheck.reason);
     const impactCheck = checkPriceImpact(priceImpactBps, this.config.risk.maxPriceImpactBps);
     if (!impactCheck.allowed) throw new Error(impactCheck.reason);
+  }
+
+  async buyCrashDirect({
+    usdAmount,
+    reason,
+    solUsdPrice,
+    maxPriceInSol,
+    requiredPoolId,
+  }: DirectCrashBuyParams): Promise<Trade> {
+    if (!this.raydiumClient) {
+      throw new Error("Raydium direct client is not configured");
+    }
+    if (!isLiveTradingArmed(this.config)) {
+      throw new Error("Live trading is not armed (TRADING_MODE/ENABLE_LIVE_TRADING).");
+    }
+    const sizeCheck = checkMaxTradeSize(
+      usdAmount,
+      this.config.trading.maxTradeUsd,
+    );
+    if (!sizeCheck.allowed) throw new Error(sizeCheck.reason);
+
+    if (!Number.isFinite(solUsdPrice) || solUsdPrice <= 0) {
+      throw new Error("Direct crash-buy requires a cached positive SOL/USD price");
+    }
+    const solIn = usdAmount / solUsdPrice;
+    const balance = await getSolBalanceSol(
+      this.connection,
+      this.keypair.publicKey,
+    );
+    const reserveCheck = checkSolReserve(
+      balance,
+      solIn + FEE_BUFFER_SOL,
+      this.config.trading.minSolReserve,
+    );
+    if (!reserveCheck.allowed) throw new Error(reserveCheck.reason);
+
+    const amountLamports = Math.round(solIn * 10 ** SOL_DECIMALS);
+    const tokenDecimals = await getMintDecimals(this.connection, this.tokenMint);
+    const quote = await this.raydiumClient.computeDirectBuy({
+      inputMint: this.config.token.solMint,
+      outputMint: this.config.token.mint,
+      amount: amountLamports,
+      slippageBps: this.config.risk.maxSlippageBps,
+    });
+    const validated = validateDirectCrashQuote({
+      quote,
+      requiredPoolId,
+      expectedInputMint: this.config.token.solMint,
+      expectedOutputMint: this.config.token.mint,
+      expectedInputAmountRaw: amountLamports,
+      inputDecimals: SOL_DECIMALS,
+      outputDecimals: tokenDecimals,
+      maxPriceInInputToken: maxPriceInSol,
+      maxPriceImpactBps: this.config.risk.maxPriceImpactBps,
+    });
+    const transactions =
+      await this.raydiumClient.buildDirectBuyTransactions({
+        quote,
+        wallet: this.keypair.publicKey.toBase58(),
+        priorityFeeMicroLamports:
+          this.config.crashBuy.raydiumPriorityFeeMicroLamports,
+      });
+    const signature = await signAndSendRaydiumTransactions(
+      this.connection,
+      this.keypair,
+      transactions,
+    );
+    this.logger.info("Direct Raydium crash-buy confirmed", { signature });
+
+    const actuals = await getSwapActuals(
+      this.connection,
+      signature,
+      this.keypair.publicKey,
+      this.tokenMint,
+    );
+    const observedTokenBought = actuals
+      ? tokenAmountFromSignedDelta(actuals.tokenDelta, tokenDecimals, "BUY")
+      : undefined;
+    const actualTokenOut = observedTokenBought ?? validated.outputAmountUi;
+    const actualSolSpent = actuals
+      ? -actuals.solDeltaLamports / 10 ** SOL_DECIMALS
+      : validated.inputAmountUi;
+
+    return {
+      timestampMs: Date.now(),
+      mode: "LIVE",
+      side: "BUY",
+      reason,
+      tokenAmount: actualTokenOut,
+      solAmount: actualSolSpent,
+      usdEstimate: actualSolSpent * solUsdPrice,
+      quoteBeforeJson: JSON.stringify(quote),
+      expectedOutput: validated.outputAmountUi,
+      actualOutput: actualTokenOut,
+      slippageBps: quote.data.slippageBps,
+      priceImpactPct: Number(quote.data.priceImpactPct),
+      networkFeeLamports: actuals?.networkFeeLamports ?? 5_000,
+      priorityFeeLamports: 0,
+      txSignature: signature,
+    };
   }
 }
 

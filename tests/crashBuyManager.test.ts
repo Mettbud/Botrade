@@ -71,9 +71,10 @@ describe("CrashBuyManager", () => {
 
     // The second argument describes only a dedicated crash-buy lot. A
     // regular spot position may exist while this value remains false.
-    expect(manager.evaluate(history, false, 800)).toEqual({
+    expect(manager.evaluate(history, false, 800)).toMatchObject({
       shouldBuy: true,
       preDropPriceUsd: 1.0,
+      reason: "TRIGGERED",
     });
   });
 
@@ -83,7 +84,10 @@ describe("CrashBuyManager", () => {
     history.push(sample(0, 1.0));
     history.push(sample(800, 0.85)); // -15%, under the 20% threshold
 
-    expect(manager.evaluate(history, false, 800).shouldBuy).toBe(false);
+    expect(manager.evaluate(history, false, 800)).toMatchObject({
+      shouldBuy: false,
+      reason: "DROP_TOO_SMALL",
+    });
   });
 
   it("does not fire on a drop that happened outside the window", () => {
@@ -101,7 +105,10 @@ describe("CrashBuyManager", () => {
     history.push(sample(0, 1.0, 0));
     history.push(sample(800, 0.75, 0.08)); // -25% drop, but spread is 8% - above the 5% cap
 
-    expect(manager.evaluate(history, false, 800).shouldBuy).toBe(false);
+    expect(manager.evaluate(history, false, 800)).toMatchObject({
+      shouldBuy: false,
+      reason: "SPREAD_TOO_WIDE",
+    });
   });
 
   it("still fires when spread is elevated but within CRASH_BUY_MAX_SPREAD_BPS", () => {

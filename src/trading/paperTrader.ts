@@ -4,8 +4,17 @@ import { estimateSwapFees } from "../jupiter/feeEstimate.js";
 import type { JupiterClient } from "../jupiter/client.js";
 import { getQuote } from "../jupiter/quote.js";
 import type { SolPriceTracker } from "../market/solPrice.js";
+import {
+  RaydiumTradeClient,
+  validateDirectCrashQuote,
+} from "../raydium/client.js";
 import { getMintDecimals } from "../wallet/balances.js";
-import type { BuyParams, SellParams, TradeExecutor } from "./tradeExecutor.js";
+import type {
+  BuyParams,
+  DirectCrashBuyParams,
+  SellParams,
+  TradeExecutor,
+} from "./tradeExecutor.js";
 import type { Trade } from "./types.js";
 
 const SOL_DECIMALS = 9;
@@ -27,6 +36,7 @@ export class PaperTrader implements TradeExecutor {
     private readonly walletPublicKey: PublicKey,
     public usdBalance: number,
     public tokenAmount: number,
+    private readonly raydiumClient?: RaydiumTradeClient,
   ) {}
 
   // No MAX_TRADE_USD check here on purpose: that guard exists to cap real
@@ -91,6 +101,74 @@ export class PaperTrader implements TradeExecutor {
       priceImpactPct: Number(quote.priceImpactPct),
       networkFeeLamports: fees.networkFeeLamports,
       priorityFeeLamports: fees.priorityFeeLamports,
+    };
+  }
+
+  async buyCrashDirect({
+    usdAmount,
+    reason,
+    solUsdPrice,
+    maxPriceInSol,
+    requiredPoolId,
+  }: DirectCrashBuyParams): Promise<Trade> {
+    if (!this.raydiumClient) {
+      throw new Error("Raydium direct client is not configured");
+    }
+    if (usdAmount > this.usdBalance) {
+      throw new Error(
+        `Paper balance $${this.usdBalance.toFixed(2)} is less than requested $${usdAmount}`,
+      );
+    }
+    if (!Number.isFinite(solUsdPrice) || solUsdPrice <= 0) {
+      throw new Error("Direct crash-buy requires a cached positive SOL/USD price");
+    }
+    const solIn = usdAmount / solUsdPrice;
+    const amountLamports = Math.round(solIn * 10 ** SOL_DECIMALS);
+    const tokenDecimals = await getMintDecimals(this.connection, this.tokenMint);
+    const quote = await this.raydiumClient.computeDirectBuy({
+      inputMint: this.config.token.solMint,
+      outputMint: this.config.token.mint,
+      amount: amountLamports,
+      slippageBps: this.config.risk.maxSlippageBps,
+    });
+    const validated = validateDirectCrashQuote({
+      quote,
+      requiredPoolId,
+      expectedInputMint: this.config.token.solMint,
+      expectedOutputMint: this.config.token.mint,
+      expectedInputAmountRaw: amountLamports,
+      inputDecimals: SOL_DECIMALS,
+      outputDecimals: tokenDecimals,
+      maxPriceInInputToken: maxPriceInSol,
+      maxPriceImpactBps: this.config.risk.maxPriceImpactBps,
+    });
+    const networkFeeLamports = 5_000;
+    const totalUsdCost =
+      validated.inputAmountUi * solUsdPrice +
+      (networkFeeLamports / 10 ** SOL_DECIMALS) * solUsdPrice;
+    if (totalUsdCost > this.usdBalance) {
+      throw new Error(
+        `Paper balance $${this.usdBalance.toFixed(2)} can't cover direct crash-buy cost $${totalUsdCost.toFixed(4)}`,
+      );
+    }
+    this.usdBalance -= totalUsdCost;
+    this.tokenAmount += validated.outputAmountUi;
+
+    return {
+      timestampMs: Date.now(),
+      mode: "PAPER",
+      side: "BUY",
+      reason,
+      tokenAmount: validated.outputAmountUi,
+      solAmount: validated.inputAmountUi,
+      usdEstimate: totalUsdCost,
+      quoteBeforeJson: JSON.stringify(quote),
+      expectedOutput: validated.outputAmountUi,
+      actualOutput: validated.outputAmountUi,
+      slippageBps: quote.data.slippageBps,
+      priceImpactPct: Number(quote.data.priceImpactPct),
+      networkFeeLamports,
+      priorityFeeLamports: 0,
     };
   }
 

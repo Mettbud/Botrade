@@ -25,6 +25,12 @@ function enabledConfig(overrides: Record<string, string> = {}) {
     AUTO_BUY_ENABLED: "true",
     AUTO_BUY_DIP_PERCENT: "50",
     AUTO_BUY_DIP_LOOKBACK_MS: "60000",
+    // Most tests below cover gates unrelated to rebound confirmation. Keep
+    // their former first-uptick semantics and test the production defaults
+    // separately.
+    AUTO_BUY_REBOUND_PERCENT: "0",
+    AUTO_BUY_REBOUND_CONFIRMATION_MS: "0",
+    AUTO_BUY_REBOUND_TIMEOUT_MS: "0",
     ...overrides,
   } as unknown as NodeJS.ProcessEnv);
 }
@@ -69,6 +75,29 @@ describe("AutoBuyManager", () => {
     history.push(sample(10_000, 0.36)); // ticks up -> buy signal
     expect(manager.evaluate(history, false, 10_000)).toBe(true);
     expect(manager.status().watching).toBe(false);
+  });
+
+  it("requires a meaningful rebound to remain confirmed before buying", () => {
+    const manager = new AutoBuyManager(enabledConfig({
+      AUTO_BUY_REBOUND_PERCENT: "1",
+      AUTO_BUY_REBOUND_CONFIRMATION_MS: "8000",
+      AUTO_BUY_REBOUND_TIMEOUT_MS: "30000",
+    }));
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1));
+    manager.evaluate(history, false, 0);
+    history.push(sample(1_000, 0.4));
+    manager.evaluate(history, false, 1_000);
+
+    history.push(sample(2_000, 0.402)); // +0.5%: noise, not a rebound
+    expect(manager.evaluate(history, false, 2_000)).toBe(false);
+    history.push(sample(3_000, 0.404)); // +1%: confirmation starts
+    expect(manager.evaluate(history, false, 3_000)).toBe(false);
+    history.push(sample(10_999, 0.405));
+    expect(manager.evaluate(history, false, 10_999)).toBe(false);
+    history.push(sample(11_000, 0.405));
+    expect(manager.evaluate(history, false, 11_000)).toBe(true);
   });
 
   it("keeps the base dip threshold when there was no preceding pump", () => {

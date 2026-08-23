@@ -13,14 +13,18 @@ export interface WatchedPool {
 export interface PoolJumpEvent {
   poolLabel: string;
   changePercent: number;
-  priceUsd: number | undefined; // undefined here - this is a SOL-denominated price, not USD
+  /** Current quote-token-per-base-token reserve price (WSOL per CYBERLEEK here). */
+  priceInQuote: number;
+  /** Reserve price immediately before the detected move, reconstructed from change%. */
+  preChangePriceInQuote: number | undefined;
 }
 
 /**
  * Subscribes to the two reserve (vault) accounts of each configured pool
  * via Solana account-change notifications, and flags a fast price jump per
- * pool. This is a trigger only - never the price a trade is decided on
- * (that's always a fresh Jupiter quote, see AutoBuyManager). Untestable
+ * pool. In normal mode this only schedules a price check. Direct crash mode
+ * may use it as a trigger, but its Raydium quote must still pass a pinned-pool
+ * and hard-maximum-price check before any transaction can be signed. Untestable
  * against real Solana from a sandboxed environment; kept intentionally
  * small and built on the separately unit-tested pieces (JumpDetector,
  * priceFromReserves, decodeTokenAccountAmount).
@@ -86,7 +90,11 @@ export class PoolWatcher extends EventEmitter {
       const event: PoolJumpEvent = {
         poolLabel: pool.label,
         changePercent: result.changePercent,
-        priceUsd: undefined,
+        priceInQuote: price,
+        preChangePriceInQuote:
+          1 + result.changePercent / 100 > 0
+            ? price / (1 + result.changePercent / 100)
+            : undefined,
       };
       this.emit("jump", event);
     }

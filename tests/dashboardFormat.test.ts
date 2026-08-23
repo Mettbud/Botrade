@@ -5,6 +5,7 @@ import {
   formatDashboardAge,
   formatPriceImpactLine,
   formatProfitLockStatusLines,
+  formatRecoveryBuyStatusLine,
   formatStopLossMargin,
 } from "../src/cli/dashboard.js";
 import type { PriceSample } from "../src/market/types.js";
@@ -56,6 +57,20 @@ describe("formatPriceImpactLine", () => {
 });
 
 describe("strategy dashboard status formatting", () => {
+  it("shows recovery-buy confirmation progress", () => {
+    expect(stripAnsi(formatRecoveryBuyStatusLine({
+      enabled: true,
+      phase: "CONFIRMING",
+      lossPercent: 8.5,
+      reboundPercentFromLow: 3.2,
+      confirmationProgressPercent: 50,
+      addsUsed: 0,
+      maxAdds: 1,
+      plannedPortfolioPercent: 5,
+      dropTriggerPercent: 8,
+      reboundTriggerPercent: 3,
+    }))).toContain("Recovery-buy: CONFIRMING");
+  });
   it("shows cascade payout count, initial-position share, next target, and last payout", () => {
     expect(formatCascadeStatusLines({
       enabled: true,

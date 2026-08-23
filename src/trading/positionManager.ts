@@ -105,6 +105,7 @@ export class PositionManager {
   private lastBlockedLogMs = 0;
   private lastSellPriceUsd: number | undefined;
   private latestCrashTrade: Trade | undefined;
+  private recoveryBuyCount = 0;
 
   constructor(
     private readonly executor: TradeExecutor,
@@ -139,6 +140,7 @@ export class PositionManager {
     this.cascadeTracker = replayCascadeTracker(trades);
     this.latestCrashTrade = replayLatestCrashTrade(trades);
     this.regularPositionIdentity = replayRegularPositionIdentity(trades);
+    this.recoveryBuyCount = replayRecoveryBuyCount(trades);
 
     const regularEntry = averageEntryPriceUsd(this.books.regular);
     if (regularEntry !== undefined && this.regularPositionIdentity) {
@@ -220,6 +222,10 @@ export class PositionManager {
 
   getLastCascadeExecution(): CascadeExecution | undefined {
     return this.cascadeTracker.lastExecution;
+  }
+
+  getRecoveryBuyCount(): number {
+    return this.recoveryBuyCount;
   }
 
   getCascadeCycle(): CascadeCycle | undefined {
@@ -585,6 +591,71 @@ export class PositionManager {
     });
   }
 
+  async crashBuyDirect(
+    usdAmount: number,
+    preDropPriceUsd: number,
+    solUsdPrice: number,
+    maxPriceInSol: number,
+    requiredPoolId: string,
+  ): Promise<Trade> {
+    if (!Number.isFinite(preDropPriceUsd) || preDropPriceUsd <= 0) {
+      throw new Error("Direct CRASH_BUY requires a positive pre-drop USD price");
+    }
+    if (!Number.isFinite(maxPriceInSol) || maxPriceInSol <= 0) {
+      throw new Error("Direct CRASH_BUY requires a positive maximum pool price");
+    }
+    if (!this.executor.buyCrashDirect) {
+      throw new Error("Direct Raydium crash-buy executor is unavailable");
+    }
+    return this.enqueueTrade(async () => {
+      if (this.hasActiveCrashLot()) {
+        throw new Error(
+          "CRASH_BUY skipped: an isolated crash lot is already active",
+        );
+      }
+      const trade = await this.executor.buyCrashDirect!({
+        usdAmount,
+        reason: "CRASH_BUY",
+        solUsdPrice,
+        maxPriceInSol,
+        requiredPoolId,
+      });
+      trade.crashLotId = randomUUID();
+      trade.crashPreDropPriceUsd = preDropPriceUsd;
+      this.recordBuy(trade);
+      return trade;
+    });
+  }
+
+  async recoveryBuy(usdAmount: number): Promise<Trade> {
+    return this.enqueueTrade(async () => {
+      if (this.books.regular.tokenAmount <= POSITION_EPSILON) {
+        throw new Error("RECOVERY_BUY requires an existing regular position");
+      }
+      if (this.hasActiveCrashLot()) {
+        throw new Error("RECOVERY_BUY blocked while an isolated crash lot is active");
+      }
+      if (
+        (this.cascadeTracker.active?.cascadeSoldTokenAmount ?? 0) >
+        POSITION_EPSILON
+      ) {
+        throw new Error("RECOVERY_BUY blocked after the first cascade payout");
+      }
+      if (
+        this.recoveryBuyCount >=
+        this.config.recoveryBuy.maxAddsPerPosition
+      ) {
+        throw new Error("RECOVERY_BUY limit reached for this regular position");
+      }
+      const trade = await this.executor.buy({
+        usdAmount,
+        reason: "RECOVERY_BUY",
+      });
+      this.recordBuy(trade);
+      return trade;
+    });
+  }
+
   hasOpenPosition(): boolean {
     return this.getCostBasis().tokenAmount > POSITION_EPSILON;
   }
@@ -668,6 +739,7 @@ export class PositionManager {
     this.crashTrailingState = undefined;
     this.lastSellPriceUsd = undefined;
     this.latestCrashTrade = undefined;
+    this.recoveryBuyCount = 0;
     this.triggeredTakeProfitGains.clear();
     this.stopLossConfirm.reset();
     this.trailingConfirm.reset();
@@ -869,6 +941,9 @@ export class PositionManager {
     let trailingKeyToPersist: string | undefined;
     let trailingIdentityToPersist: string | undefined;
     this.books = applyTradeToBooks(this.books, trade);
+    if (trade.reason === "RECOVERY_BUY") {
+      this.recoveryBuyCount += 1;
+    }
     this.cascadeTracker = updateCascadeTracker(
       this.cascadeTracker,
       trade,
@@ -943,6 +1018,9 @@ export class PositionManager {
       this.books.regular,
     );
     const aggregateAfter = this.getCostBasis();
+    if (this.books.regular.tokenAmount <= POSITION_EPSILON) {
+      this.recoveryBuyCount = 0;
+    }
     const crashTokensAfter = this.books.crashLots.reduce(
       (total, lot) => total + lot.tokenAmount,
       0,
@@ -1073,6 +1151,30 @@ function replayLatestCrashTrade(trades: readonly Trade[]): Trade | undefined {
 
 function totalCrashTokens(books: PositionBooksState): number {
   return books.crashLots.reduce((total, lot) => total + lot.tokenAmount, 0);
+}
+
+function replayRecoveryBuyCount(trades: readonly Trade[]): number {
+  let books = EMPTY_POSITION_BOOKS;
+  let count = 0;
+
+  for (const trade of trades) {
+    const regularBefore = books.regular.tokenAmount;
+    books = applyTradeToBooks(books, trade);
+    const regularAfter = books.regular.tokenAmount;
+
+    if (regularBefore <= POSITION_EPSILON && regularAfter > POSITION_EPSILON) {
+      count = trade.reason === "RECOVERY_BUY" ? 1 : 0;
+    } else if (
+      trade.side === "BUY" &&
+      trade.reason === "RECOVERY_BUY" &&
+      regularAfter > regularBefore
+    ) {
+      count += 1;
+    }
+    if (regularAfter <= POSITION_EPSILON) count = 0;
+  }
+
+  return count;
 }
 
 function replayRegularPositionIdentity(

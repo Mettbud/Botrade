@@ -11,6 +11,14 @@ export interface SellParams {
   reason: TradeReason;
 }
 
+export interface DirectCrashBuyParams extends BuyParams {
+  /** Cached SOL/USD from the observed market sample; no Jupiter call. */
+  solUsdPrice: number;
+  /** Highest acceptable WSOL-per-token price, including configured slippage. */
+  maxPriceInSol: number;
+  requiredPoolId: string;
+}
+
 /**
  * Common surface for paper and live trading. `realizedPnlUsd` on the
  * returned Trade is intentionally left unset here - the caller (position
@@ -20,5 +28,6 @@ export interface SellParams {
 export interface TradeExecutor {
   readonly mode: TradeMode;
   buy(params: BuyParams): Promise<Trade>;
+  buyCrashDirect?(params: DirectCrashBuyParams): Promise<Trade>;
   sell(params: SellParams): Promise<Trade>;
 }

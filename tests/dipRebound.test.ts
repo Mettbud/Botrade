@@ -58,4 +58,47 @@ describe("updateDipWatch", () => {
     expect(rearmed.state.watching).toBe(true);
     expect(rearmed.state.armedDipPercent).toBe(5);
   });
+
+  it("holds a configured rebound for the full confirmation period", () => {
+    let state = updateDipWatch(IDLE_DIP_WATCH, 0.4, 1, 50, {
+      nowMs: 1_000,
+      reboundPercent: 1,
+      confirmationMs: 8_000,
+      timeoutMs: 30_000,
+    }).state;
+    let result = updateDipWatch(state, 0.404, 1, 50, {
+      nowMs: 2_000,
+      reboundPercent: 1,
+      confirmationMs: 8_000,
+      timeoutMs: 30_000,
+    });
+    expect(result.shouldBuy).toBe(false);
+    expect(result.state.reboundStartedAtMs).toBe(2_000);
+
+    state = result.state;
+    result = updateDipWatch(state, 0.405, 1, 50, {
+      nowMs: 10_000,
+      reboundPercent: 1,
+      confirmationMs: 8_000,
+      timeoutMs: 30_000,
+    });
+    expect(result.shouldBuy).toBe(true);
+  });
+
+  it("expires a stale rebound watch instead of buying an old setup", () => {
+    const state = updateDipWatch(IDLE_DIP_WATCH, 0.4, 1, 50, {
+      nowMs: 1_000,
+      reboundPercent: 1,
+      confirmationMs: 0,
+      timeoutMs: 5_000,
+    }).state;
+    const result = updateDipWatch(state, 0.5, 1, 50, {
+      nowMs: 6_000,
+      reboundPercent: 1,
+      confirmationMs: 0,
+      timeoutMs: 5_000,
+    });
+    expect(result.shouldBuy).toBe(false);
+    expect(result.state).toEqual(IDLE_DIP_WATCH);
+  });
 });
