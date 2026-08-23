@@ -122,8 +122,12 @@ async function main(): Promise<void> {
   let lastCrashError: { message: string; timestampMs: number } | undefined;
   let retainedCrashEvent: RetainedCrashEvent | undefined;
   if (config.crashBuy.enabled) {
+    const sizeLimit =
+      config.trading.mode === "paper"
+        ? "without a PAPER dollar cap"
+        : `up to $${config.crashBuy.maxUsd}`;
     logger.info(
-      `CRASH_BUY_ENABLED: watching for a ${config.crashBuy.dropPercent}%+ drop within ${config.crashBuy.windowMs}ms, buying immediately up to $${config.crashBuy.maxUsd} (${config.crashBuy.portfolioPercent}% of available).`,
+      `CRASH_BUY_ENABLED: watching for a ${config.crashBuy.dropPercent}%+ drop within ${config.crashBuy.windowMs}ms, buying immediately ${sizeLimit} (${config.crashBuy.portfolioPercent}% of available).`,
     );
   }
 
@@ -549,7 +553,8 @@ function buildCrashBuyDashboardStatus(
   retainedEvent: RetainedCrashEvent | undefined,
   nowMs: number,
 ): CrashBuyDashboardStatus {
-  if (!config.crashBuy.enabled) return { phase: "OFF" };
+  const realizedPnlUsd = positionManager.getCrashBuyRealizedPnlUsd();
+  if (!config.crashBuy.enabled) return { phase: "OFF", realizedPnlUsd };
 
   const activeLot = positionManager.getActiveCrashLot();
   const latestTrade = positionManager.getLatestCrashTrade();
@@ -580,6 +585,17 @@ function buildCrashBuyDashboardStatus(
     activeLot && activeLot.tokenAmount > POSITION_EPSILON
       ? activeLot.totalCostUsd / activeLot.tokenAmount
       : undefined;
+  const activeLotPnlUsd =
+    activeLot && currentSellPriceUsd !== undefined
+      ? activeLot.tokenAmount * currentSellPriceUsd - activeLot.totalCostUsd
+      : undefined;
+  const pnlSummary = {
+    realizedPnlUsd,
+    totalPnlUsd:
+      activeLotPnlUsd === undefined
+        ? undefined
+        : realizedPnlUsd + activeLotPnlUsd,
+  };
   const activeLotStatus = activeLot
     ? {
         tokenAmount: activeLot.tokenAmount,
@@ -589,6 +605,7 @@ function buildCrashBuyDashboardStatus(
           activeLot.preDropPriceUsd *
           (1 - config.crashBuy.reboundTolerancePercent / 100),
         entryPriceUsd: activeLotEntryPriceUsd,
+        pnlUsd: activeLotPnlUsd,
         pnlPercent:
           activeLotEntryPriceUsd !== undefined &&
           currentSellPriceUsd !== undefined
@@ -607,6 +624,7 @@ function buildCrashBuyDashboardStatus(
   if (positionManager.isCrashAutomationPaused()) {
     return {
       phase: "PAUSED",
+      ...pnlSummary,
       detail: "persisted crash-lot accounting needs manual reconciliation",
       activeLot: activeLotStatus,
       lastEvent,
@@ -616,6 +634,7 @@ function buildCrashBuyDashboardStatus(
   if (buyInFlight) {
     return {
       phase: "BUYING",
+      ...pnlSummary,
       detail: "isolated lot order in progress",
       lastEvent,
     };
@@ -623,6 +642,7 @@ function buildCrashBuyDashboardStatus(
   if (activeLot) {
     return {
       phase: "ACTIVE",
+      ...pnlSummary,
       detail: exitInFlight
         ? "rebound exit in progress"
         : recentError?.message,
@@ -633,17 +653,24 @@ function buildCrashBuyDashboardStatus(
   if (positionManager.hasActiveCrashLot()) {
     return {
       phase: "PAUSED",
+      ...pnlSummary,
       detail: "multiple active crash lots require manual review",
       lastEvent,
     };
   }
   if (recentError) {
-    return { phase: "ERROR", detail: recentError.message, lastEvent };
+    return {
+      phase: "ERROR",
+      ...pnlSummary,
+      detail: recentError.message,
+      lastEvent,
+    };
   }
-  if (lastEvent) return { phase: "RECENT", lastEvent };
+  if (lastEvent) return { phase: "RECENT", ...pnlSummary, lastEvent };
   return {
     phase: "ARMED",
-    detail: `trigger -${config.crashBuy.dropPercent}% / ${Math.round(config.crashBuy.windowMs / 1000)}s, size ${config.crashBuy.portfolioPercent}% (max $${config.crashBuy.maxUsd})`,
+    ...pnlSummary,
+    detail: `trigger -${config.crashBuy.dropPercent}% / ${Math.round(config.crashBuy.windowMs / 1000)}s, size ${config.crashBuy.portfolioPercent}% (${config.trading.mode === "paper" ? "no dollar cap in PAPER" : `max $${config.crashBuy.maxUsd}`})`,
   };
 }
 

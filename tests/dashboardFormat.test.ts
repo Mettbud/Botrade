@@ -96,12 +96,15 @@ describe("strategy dashboard status formatting", () => {
   it("keeps an active crash lot and its most recent event readable", () => {
     const lines = formatCrashBuyStatusLines({
       phase: "ACTIVE",
+      realizedPnlUsd: 12.5,
+      totalPnlUsd: 15,
       activeLot: {
         tokenAmount: 1_234.56789,
         costUsd: 50,
         preDropPriceUsd: 0.03,
         reboundTargetPriceUsd: 0.0249,
         entryPriceUsd: 0.02,
+        pnlUsd: 2.5,
         pnlPercent: 5,
         stopLossPriceUsd: 0.017,
         trailingStopPercent: 12,
@@ -114,9 +117,20 @@ describe("strategy dashboard status formatting", () => {
 
     expect(lines).toEqual([
       "Crash-buy: ACTIVE",
+      "  Crash PnL: realized $12.50 | open $2.50 | total $15.00",
       "  Lot: 1,234.56789 CYBERLEEK | cost $50.00 | P0 $0.03000000 | rebound $0.02490000",
       "  Risk: entry $0.02000000 | PnL +5.00% | hard stop $0.01700000 | trailing 12.00% (isolated)",
       "  Last: bought isolated crash lot (1m ago)",
+    ]);
+  });
+
+  it("keeps cumulative crash profit visible after the lot closes", () => {
+    expect(formatCrashBuyStatusLines({
+      phase: "RECENT",
+      realizedPnlUsd: -3.25,
+    }, "CYBERLEEK").map(stripAnsi)).toEqual([
+      "Crash-buy: RECENT",
+      "  Crash PnL: realized $-3.25",
     ]);
   });
 

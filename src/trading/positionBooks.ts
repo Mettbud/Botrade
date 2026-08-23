@@ -113,6 +113,14 @@ export function aggregateBooks(state: PositionBooksState): CostBasisState {
   );
 }
 
+/** Realized P&L attributed only to isolated crash lots, including closed lots. */
+export function crashBuyRealizedPnlUsd(state: PositionBooksState): number {
+  return state.crashLots.reduce(
+    (total, lot) => total + lot.realizedPnlUsd,
+    0,
+  );
+}
+
 /**
  * Returns an active lot only when it is unambiguous. Passing an ID always does
  * an exact lookup; without one, two simultaneous lots deliberately yield

@@ -260,9 +260,10 @@ over once a sample does land.
 Sizing is deliberately larger than a normal auto-buy, since the whole
 point is catching a rare, genuine crash - a $1 nibble wouldn't be worth
 chasing it for. It spends `CRASH_BUY_PORTFOLIO_PERCENT`% (default 50%) of
-whatever's currently available (PAPER balance, or live SOL balance above
-`MIN_SOL_RESERVE` converted to USD), hard-capped at `CRASH_BUY_MAX_USD`
-(default $50) either way - both apply on PAPER and LIVE.
+what's currently available. PAPER uses that simulated-balance percentage
+without a dollar cap. LIVE uses the SOL balance above `MIN_SOL_RESERVE`,
+converted to USD, and remains hard-capped by `CRASH_BUY_MAX_USD` (default
+$50).
 
 Also gated by `CRASH_BUY_MAX_SPREAD_BPS` (default 500 = 5%): a genuine
 crash naturally widens spread, so this is deliberately looser than normal
@@ -276,7 +277,9 @@ sells (`CRASH_BUY_EXIT` in the trade log). Regular tokens are left untouched,
 even if they share the same fungible wallet balance. The lot ID, P0, initial
 amount and remaining cost are persisted, so a restart does not lose the exit.
 The dashboard keeps ACTIVE state until exit and retains the last crash event
-for `CRASH_BUY_STATUS_HOLD_MS` afterwards. Regular and crash books evaluate
+for `CRASH_BUY_STATUS_HOLD_MS` afterwards. It also shows cumulative realized
+crash-lot P&L and, while a lot is open, its mark-to-market and combined total.
+Regular and crash books evaluate
 `STOP_LOSS_PERCENT`/`TRAILING_STOP_PERCENT` independently: a stop triggered in
 only one book sells only that book. If both independently cross the hard
 stop-loss on the same sample, one aggregate emergency swap closes both faster;

@@ -207,15 +207,15 @@ const rawEnvSchema = z.object({
   // very fast, sharp drop (CRASH_BUY_DROP_PERCENT within CRASH_BUY_WINDOW_MS,
   // measured on the live executable USD price history) and buys immediately
   // instead of waiting for a dip->rebound like normal auto-buy - still
-  // always through a real Jupiter quote, never a raw on-chain swap. Only
-  // buys while flat. Sized as a real chunk of the wallet on purpose (see
+  // always through a real Jupiter quote, never a raw on-chain swap. At most
+  // one isolated crash lot can be active. Sized as a real chunk on purpose (see
   // CRASH_BUY_PORTFOLIO_PERCENT/CRASH_BUY_MAX_USD) since the whole point is
   // to catch a real, rare crash - a $1 nibble wouldn't be worth chasing it for.
   CRASH_BUY_ENABLED: boolFromString,
   CRASH_BUY_DROP_PERCENT: numFromString(20),
   CRASH_BUY_WINDOW_MS: positiveMillisecondsFromString(12_000),
-  // Hard USD ceiling for a single crash-buy - a separate, higher cap from
-  // MAX_TRADE_USD (which stays the normal per-trade limit everywhere else).
+  // Hard USD ceiling for a single LIVE crash-buy. PAPER intentionally ignores
+  // this cap and uses CRASH_BUY_PORTFOLIO_PERCENT of its simulated balance.
   CRASH_BUY_MAX_USD: numFromString(50),
   CRASH_BUY_PORTFOLIO_PERCENT: numFromString(50),
   // Exit rule for a crash-buy position: sell in full once price recovers to

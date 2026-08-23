@@ -52,6 +52,10 @@ export type CrashBuyDashboardPhase =
 
 export interface CrashBuyDashboardStatus {
   phase: CrashBuyDashboardPhase;
+  /** Closed/partially closed crash-lot P&L accumulated in the current DB. */
+  realizedPnlUsd: number;
+  /** Realized plus current mark-to-market P&L of the active crash lot. */
+  totalPnlUsd?: number;
   /** Short explanation for PAUSED/ERROR, or other useful state detail. */
   detail?: string;
   activeLot?: {
@@ -61,6 +65,7 @@ export interface CrashBuyDashboardStatus {
     preDropPriceUsd: number;
     reboundTargetPriceUsd: number;
     entryPriceUsd?: number;
+    pnlUsd?: number;
     pnlPercent?: number;
     stopLossPriceUsd?: number;
     trailingStopPercent?: number;
@@ -279,6 +284,22 @@ export function formatCrashBuyStatusLines(
   const lines = [
     `Crash-buy: ${colorize(status.phase, phaseColor)}${detail}`,
   ];
+
+  const activePnlUsd = status.activeLot?.pnlUsd;
+  const pnlParts = [
+    `realized ${colorize(usd(status.realizedPnlUsd, 2), signColor(status.realizedPnlUsd))}`,
+  ];
+  if (activePnlUsd !== undefined) {
+    pnlParts.push(
+      `open ${colorize(usd(activePnlUsd, 2), signColor(activePnlUsd))}`,
+    );
+  }
+  if (status.totalPnlUsd !== undefined && activePnlUsd !== undefined) {
+    pnlParts.push(
+      `total ${colorize(usd(status.totalPnlUsd, 2), signColor(status.totalPnlUsd))}`,
+    );
+  }
+  lines.push(`  Crash PnL: ${pnlParts.join(" | ")}`);
 
   if (status.activeLot) {
     const lot = status.activeLot;

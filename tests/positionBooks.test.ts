@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   aggregateBooks,
   applyTradeToBooks,
+  crashBuyRealizedPnlUsd,
   EMPTY_POSITION_BOOKS,
   getActiveCrashLot,
   replayPositionBooks,
@@ -242,5 +243,19 @@ describe("positionBooks", () => {
     expect(state.warnings.sellAmountExceededTargetBook).toBe(true);
     // Only the proceeds corresponding to the ten actually routed tokens apply.
     expect(state.regular.realizedPnlUsd).toBeCloseTo(10, 9);
+  });
+
+  it("sums realized PnL only from crash lots, including closed lots", () => {
+    const state = replayPositionBooks([
+      trade("BUY", "AUTO_BUY", 10, 10),
+      crashBuy("closed", 40, 80),
+      trade("SELL", "CRASH_BUY_EXIT", 40, 100, {
+        crashLotId: "closed",
+      }),
+      trade("SELL", "MANUAL", 10, 20),
+    ]);
+
+    expect(crashBuyRealizedPnlUsd(state)).toBeCloseTo(20, 9);
+    expect(aggregateBooks(state).realizedPnlUsd).toBeCloseTo(30, 9);
   });
 });

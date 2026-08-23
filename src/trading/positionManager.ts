@@ -37,6 +37,7 @@ import {
 import {
   aggregateBooks,
   applyTradeToBooks,
+  crashBuyRealizedPnlUsd,
   EMPTY_POSITION_BOOKS,
   getActiveCrashLot as findActiveCrashLot,
   replayPositionBooks,
@@ -194,6 +195,10 @@ export class PositionManager {
 
   getActiveCrashLot(crashLotId?: string): CrashLotState | undefined {
     return findActiveCrashLot(this.books, crashLotId);
+  }
+
+  getCrashBuyRealizedPnlUsd(): number {
+    return crashBuyRealizedPnlUsd(this.books);
   }
 
   hasActiveCrashLot(): boolean {

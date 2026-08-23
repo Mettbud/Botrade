@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { resolveCrashBuySizeUsd } from "../src/trading/crashBuySize.js";
 
 describe("resolveCrashBuySizeUsd", () => {
-  it("PAPER: uses portfolioPercent of the paper balance, capped by maxUsd", () => {
-    expect(resolveCrashBuySizeUsd("PAPER", 1000, 0, 50, 50)).toBe(50); // 50% of 1000 = 500, capped to 50
-    expect(resolveCrashBuySizeUsd("PAPER", 60, 0, 50, 50)).toBe(30); // 50% of 60 = 30, under the cap
+  it("PAPER: uses portfolioPercent without the LIVE dollar cap", () => {
+    expect(resolveCrashBuySizeUsd("PAPER", 1000, 0, 50, 50)).toBe(500);
+    expect(resolveCrashBuySizeUsd("PAPER", 60, 0, 50, 1)).toBe(30);
   });
 
   it("LIVE: uses portfolioPercent of the live-available balance, capped by maxUsd", () => {
