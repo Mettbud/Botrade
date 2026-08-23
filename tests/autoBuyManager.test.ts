@@ -1,0 +1,92 @@
+import { describe, expect, it } from "vitest";
+import { buildConfig } from "../src/config/schema.js";
+import { PriceHistoryBuffer } from "../src/market/history.js";
+import type { PriceSample } from "../src/market/types.js";
+import { AutoBuyManager } from "../src/trading/autoBuyManager.js";
+
+function sample(timestampMs: number, sellPriceUsd: number): PriceSample {
+  return {
+    timestampMs,
+    buyPriceUsd: sellPriceUsd,
+    sellPriceUsd,
+    spread: 0,
+    priceImpactBuyBps: 10,
+    priceImpactSellBps: 10,
+    referenceSolAmount: 0.01,
+    referenceTokenAmountUi: 100,
+    solUsdPrice: 150,
+  };
+}
+
+function enabledConfig(overrides: Record<string, string> = {}) {
+  return buildConfig({
+    TARGET_TOKEN_MINT: "ApZuxdpzMrbEYTGEzeY9afh5pj9d6qPRJCTgQYiipbKg",
+    AUTO_BUY_ENABLED: "true",
+    AUTO_BUY_DIP_PERCENT: "50",
+    AUTO_BUY_DIP_LOOKBACK_MS: "60000",
+    ...overrides,
+  } as unknown as NodeJS.ProcessEnv);
+}
+
+describe("AutoBuyManager", () => {
+  it("does nothing when disabled", () => {
+    const config = buildConfig({
+      TARGET_TOKEN_MINT: "ApZuxdpzMrbEYTGEzeY9afh5pj9d6qPRJCTgQYiipbKg",
+    } as unknown as NodeJS.ProcessEnv);
+    const manager = new AutoBuyManager(config);
+    const history = new PriceHistoryBuffer();
+    history.push(sample(0, 1.0));
+    history.push(sample(10_000, 0.3)); // -70%, would trigger if enabled
+
+    expect(manager.evaluate(history, false, 10_000)).toBe(false);
+  });
+
+  it("does not watch while a position is already open", () => {
+    const manager = new AutoBuyManager(enabledConfig());
+    const history = new PriceHistoryBuffer();
+    history.push(sample(0, 1.0));
+    history.push(sample(10_000, 0.3));
+
+    expect(manager.evaluate(history, true, 10_000)).toBe(false);
+    expect(manager.status().watching).toBe(false);
+  });
+
+  it("fires a buy on the full dip -> rebound sequence, end to end", () => {
+    const manager = new AutoBuyManager(enabledConfig());
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0)); // recent high
+    expect(manager.evaluate(history, false, 0)).toBe(false);
+
+    history.push(sample(1_000, 0.4)); // -60%, crosses the 50% threshold
+    expect(manager.evaluate(history, false, 1_000)).toBe(false);
+    expect(manager.status().watching).toBe(true);
+
+    history.push(sample(2_000, 0.35)); // still falling
+    expect(manager.evaluate(history, false, 2_000)).toBe(false);
+
+    history.push(sample(10_000, 0.36)); // ticks up -> buy signal
+    expect(manager.evaluate(history, false, 10_000)).toBe(true);
+    expect(manager.status().watching).toBe(false);
+  });
+
+  it("respects the technical minimum gap between two buy signals", () => {
+    const manager = new AutoBuyManager(enabledConfig());
+    const history = new PriceHistoryBuffer();
+
+    history.push(sample(0, 1.0));
+    manager.evaluate(history, false, 0);
+    history.push(sample(1_000, 0.4));
+    manager.evaluate(history, false, 1_000); // starts watching
+    history.push(sample(2_000, 0.41));
+    expect(manager.evaluate(history, false, 2_000)).toBe(true); // rebound #1
+
+    // Immediately set up a second dip/rebound within the min-gap window.
+    history.push(sample(2_100, 1.0));
+    manager.evaluate(history, false, 2_100);
+    history.push(sample(2_200, 0.4));
+    manager.evaluate(history, false, 2_200); // starts watching again
+    history.push(sample(2_300, 0.41));
+    expect(manager.evaluate(history, false, 2_300)).toBe(false); // too soon
+  });
+});

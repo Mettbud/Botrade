@@ -49,13 +49,21 @@ export class JupiterClient {
     return headers;
   }
 
+  /** Never includes the key itself - just whether one is being sent, and to which host. */
+  private describeEndpoint(): string {
+    return `${this.baseUrl} (api key: ${this.apiKey ? "yes" : "no"})`;
+  }
+
   async get<T>(path: string, query: Record<string, string>): Promise<T> {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [key, value] of Object.entries(query)) {
       url.searchParams.set(key, value);
     }
     const res = await fetch(url, { headers: this.headers() });
-    return this.parse<T>(res, () => `${path}?${url.searchParams.toString()}`);
+    return this.parse<T>(
+      res,
+      () => `${this.describeEndpoint()} ${path}?${url.searchParams.toString()}`,
+    );
   }
 
   async post<T>(path: string, body: unknown): Promise<T> {
@@ -64,7 +72,7 @@ export class JupiterClient {
       headers: { ...this.headers(), "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return this.parse<T>(res, () => path);
+    return this.parse<T>(res, () => `${this.describeEndpoint()} ${path}`);
   }
 
   private async parse<T>(res: Response, describeRequest: () => string): Promise<T> {

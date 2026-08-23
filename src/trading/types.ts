@@ -2,6 +2,7 @@ export type TradeSide = "BUY" | "SELL";
 export type TradeMode = "PAPER" | "LIVE";
 export type TradeReason =
   | "MANUAL"
+  | "AUTO_BUY"
   | "STOP_LOSS"
   | "TRAILING_STOP"
   | "TAKE_PROFIT"

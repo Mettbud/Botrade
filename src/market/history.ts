@@ -52,4 +52,17 @@ export class PriceHistoryBuffer {
       changePercent: this.changePercent(w.windowMs),
     }));
   }
+
+  /** Highest sellPriceUsd seen within the last `windowMs`, including now. */
+  maxPrice(windowMs: number): number | undefined {
+    const latest = this.latest();
+    if (!latest) return undefined;
+    const cutoff = latest.timestampMs - windowMs;
+    let max: number | undefined;
+    for (const s of this.samples) {
+      if (s.timestampMs < cutoff) continue;
+      if (max === undefined || s.sellPriceUsd > max) max = s.sellPriceUsd;
+    }
+    return max;
+  }
 }

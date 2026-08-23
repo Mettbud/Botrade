@@ -122,6 +122,28 @@ Momentum/dump alerts (e.g. `🚀 MOMENTUM: +8.4% / 30s`, `⚠️ DUMP DETECTED:
 | `help` | List commands |
 | `quit` / `exit` or `Ctrl+C` | Stop the bot cleanly |
 
+### Optional: auto-buy (off by default)
+
+By default the bot never buys on its own - `buy` is the only way in. Set
+`AUTO_BUY_ENABLED=true` to change that: the bot then watches for
+`AUTO_BUY_DIP_PERCENT`% (default 50%) drop within `AUTO_BUY_DIP_LOOKBACK_MS`
+(default 60s), and buys on the very first tick price ticks up from its low
+after that. This targets a pattern CYBERLEEK specifically shows - a sudden,
+extreme wick down that immediately bounces.
+
+**Be honest with yourself about what this is and isn't.** It is a simple,
+transparent rule, not a prediction - there is no way for the bot (or
+anyone) to know in advance whether a given drop is "the" dip or the start
+of a bigger fall. It will buy into drops that keep falling. It only ever
+buys while the bot has no open position, and every buy still goes through
+`MAX_TRADE_USD` - but the entry decision itself carries real risk that
+`STOP_LOSS_PERCENT` limits, it doesn't remove. Test it in paper mode for a
+good while, watching how often the "rebound" was real vs. a dead cat
+bounce, before ever pairing it with live trading.
+
+The dashboard shows `Auto-buy: OFF` / `ON, watching for a dip (...)` /
+`WATCHING for rebound (...)` so you can see what state it's in at a glance.
+
 ## Run live trading
 
 Only after you're comfortable with paper trading and the numbers it's
@@ -161,6 +183,26 @@ log — it does not trust a wallet UI's P&L display. Every buy adds to
 position sold, netting out its share of cost basis. Fees are folded into
 `usdEstimate` on both sides, so realized/unrealized P&L already accounts
 for them.
+
+## Logs & rate limits
+
+The dashboard clears the terminal every second, so anything only printed
+to the console can flash and vanish before you read it. Two things fix
+that:
+
+- Every log line is also written to `LOG_FILE` (default `./data/bot.log`)
+  - open it any time to see everything, not just the last screen redraw.
+- The most recent price-feed error (e.g. a Jupiter rate limit) stays
+  visible on the dashboard itself until the next successful price update,
+  instead of disappearing on the next clear.
+
+If you see `429 Too Many Requests` a lot: the bot already backs off
+automatically (it waits longer after each consecutive failure, up to 30s),
+but the real fix is a free API key from https://portal.jup.ag pasted into
+`JUPITER_API_KEY` - it switches the bot from the shared free tier
+(`lite-api.jup.ag`) to the keyed one (`api.jup.ag`) with a much higher
+limit, at no cost. `PRICE_POLL_INTERVAL_MS` below ~1000ms will still find
+that limit eventually since every tick is 2 requests.
 
 ## Data storage
 

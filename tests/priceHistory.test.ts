@@ -42,6 +42,25 @@ describe("PriceHistoryBuffer", () => {
     expect(buf.changePercent(60_000)).toBeUndefined();
   });
 
+  it("maxPrice finds the highest sellPriceUsd within the window", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 4_000_000;
+    buf.push(sample(t0, 1.0));
+    buf.push(sample(t0 + 5_000, 2.0)); // the peak
+    buf.push(sample(t0 + 10_000, 0.5)); // crashed
+
+    expect(buf.maxPrice(10_000)).toBeCloseTo(2.0, 9);
+  });
+
+  it("maxPrice ignores samples outside the window", () => {
+    const buf = new PriceHistoryBuffer();
+    const t0 = 5_000_000;
+    buf.push(sample(t0, 5.0)); // old high, outside the 10s window below
+    buf.push(sample(t0 + 20_000, 1.0));
+
+    expect(buf.maxPrice(10_000)).toBeCloseTo(1.0, 9);
+  });
+
   it("evicts samples older than the retention window", () => {
     const buf = new PriceHistoryBuffer();
     buf.push(sample(0, 1.0));

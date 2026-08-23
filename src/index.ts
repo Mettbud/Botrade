@@ -10,6 +10,7 @@ import { createLogger } from "./logger/index.js";
 import { PriceFeed } from "./market/priceFeed.js";
 import { SolPriceTracker } from "./market/solPrice.js";
 import { getConnection } from "./solana/connection.js";
+import { AutoBuyManager } from "./trading/autoBuyManager.js";
 import { LiveTrader } from "./trading/liveTrader.js";
 import { PaperTrader } from "./trading/paperTrader.js";
 import { PositionManager } from "./trading/positionManager.js";
@@ -54,6 +55,12 @@ async function main(): Promise<void> {
   });
 
   const positionManager = new PositionManager(executor, tradesRepo, config, logger);
+  const autoBuyManager = new AutoBuyManager(config);
+  if (config.autoBuy.enabled) {
+    logger.info(
+      `AUTO_BUY_ENABLED: watching for a ${config.autoBuy.dipPercent}%+ drop within ${config.autoBuy.lookbackMs}ms, then buying on the first rebound tick.`,
+    );
+  }
 
   let lastMovementMessage: string | undefined;
   let lastErrorMessage: string | undefined;
@@ -77,6 +84,23 @@ async function main(): Promise<void> {
       sample.priceImpactSellBps,
       sample.timestampMs,
     );
+
+    if (
+      autoBuyManager.evaluate(
+        priceFeed.history,
+        positionManager.hasOpenPosition(),
+        sample.timestampMs,
+      )
+    ) {
+      logger.info(
+        `AUTO_BUY: dip rebound detected, buying $${config.trading.maxTradeUsd}`,
+      );
+      positionManager
+        .manualBuy(config.trading.maxTradeUsd, "AUTO_BUY")
+        .catch((err) =>
+          logger.error("AUTO_BUY failed", { err: String(err) }),
+        );
+    }
   });
   priceFeed.on("error", (err) => {
     // Full detail already went to the log file via PriceFeed's own
@@ -117,6 +141,7 @@ async function main(): Promise<void> {
       paperUsdBalance: executor instanceof PaperTrader ? executor.usdBalance : undefined,
       lastMovementMessage,
       lastErrorMessage,
+      autoBuy: autoBuyManager.status(),
       stopLossPercent: config.strategy.stopLossPercent,
       trailingStopPercent: config.strategy.trailingStopPercent,
     });

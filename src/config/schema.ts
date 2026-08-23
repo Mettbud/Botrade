@@ -18,8 +18,12 @@ const rawEnvSchema = z.object({
   RPC_URL: z.string().url().default("https://api.mainnet-beta.solana.com"),
   RPC_WS_URL: z.string().default(""),
 
-  JUPITER_API_KEY: z.string().default(""),
-  JUPITER_BASE_URL: z.string().url().default("https://lite-api.jup.ag"),
+  // .trim() for the same reason as the mint addresses above: a stray
+  // newline/space pasted from a text editor makes the key non-empty (so it
+  // silently "activates") but invalid, so requests still fall back to the
+  // anonymous rate limit with no obvious error pointing at the key itself.
+  JUPITER_API_KEY: z.string().trim().default(""),
+  JUPITER_BASE_URL: z.string().trim().url().default("https://lite-api.jup.ag"),
 
   // .trim() guards against a stray trailing space/newline sneaking in when
   // an address is pasted from a text editor - Jupiter rejects those with an
@@ -63,6 +67,16 @@ const rawEnvSchema = z.object({
 
   STOP_CONFIRMATION_ENABLED: boolFromString,
   STOP_CONFIRMATION_MS: numFromString(2000),
+
+  // Off by default - a deliberate opt-in separate from TRADING_MODE/
+  // ENABLE_LIVE_TRADING, since this decides WHEN to enter a position at
+  // all rather than just how to exit one. Only ever buys while flat (no
+  // open position), and always still through MAX_TRADE_USD.
+  AUTO_BUY_ENABLED: boolFromString,
+  // How far price must drop from its recent high, within AUTO_BUY_DIP_LOOKBACK_MS,
+  // before the bot starts watching for a rebound to buy into.
+  AUTO_BUY_DIP_PERCENT: numFromString(50),
+  AUTO_BUY_DIP_LOOKBACK_MS: numFromString(60_000),
 
   PRIORITY_LEVEL: z
     .enum(["low", "medium", "high", "veryHigh"])
@@ -137,6 +151,11 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       trailingStopActivationPercent: raw.TRAILING_STOP_ACTIVATION_PERCENT,
       stopConfirmationEnabled: raw.STOP_CONFIRMATION_ENABLED,
       stopConfirmationMs: raw.STOP_CONFIRMATION_MS,
+    },
+    autoBuy: {
+      enabled: raw.AUTO_BUY_ENABLED,
+      dipPercent: raw.AUTO_BUY_DIP_PERCENT,
+      lookbackMs: raw.AUTO_BUY_DIP_LOOKBACK_MS,
     },
     execution: {
       priorityLevel: raw.PRIORITY_LEVEL,

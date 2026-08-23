@@ -110,10 +110,14 @@ export class PositionManager {
     }
   }
 
-  async manualBuy(usdAmount: number): Promise<Trade> {
-    const trade = await this.executor.buy({ usdAmount, reason: "MANUAL" });
+  async manualBuy(usdAmount: number, reason: TradeReason = "MANUAL"): Promise<Trade> {
+    const trade = await this.executor.buy({ usdAmount, reason });
     this.recordBuy(trade);
     return trade;
+  }
+
+  hasOpenPosition(): boolean {
+    return this.costBasis.tokenAmount > 0;
   }
 
   async manualSell(

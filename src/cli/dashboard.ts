@@ -1,6 +1,7 @@
 import type { CostBasisState } from "../strategy/costBasis.js";
 import type { PositionEvaluation } from "../strategy/evaluatePosition.js";
 import type { PriceSample } from "../market/types.js";
+import type { AutoBuyStatus } from "../trading/autoBuyManager.js";
 import { colorize, colors, pct, signColor, usd } from "./format.js";
 
 export interface DashboardState {
@@ -17,6 +18,7 @@ export interface DashboardState {
   /** Persists until the next successful sample - unlike a plain log line,
    *  this survives the once-a-second screen clear so it's actually readable. */
   lastErrorMessage: string | undefined;
+  autoBuy: AutoBuyStatus;
   stopLossPercent: number;
   trailingStopPercent: number;
 }
@@ -55,6 +57,7 @@ export function formatDashboard(s: DashboardState): string {
     );
   } else {
     lines.push("Position: none");
+    lines.push(formatAutoBuyLine(s.autoBuy));
   }
 
   lines.push("");
@@ -92,6 +95,14 @@ export function formatDashboard(s: DashboardState): string {
   lines.push(`Mode: ${colorize(s.mode, modeColor)}`);
 
   return lines.join("\n");
+}
+
+function formatAutoBuyLine(status: AutoBuyStatus): string {
+  if (!status.enabled) return `Auto-buy: ${colorize("OFF", colors.DIM)}`;
+  if (status.watching) {
+    return `Auto-buy: ${colorize("WATCHING for rebound", colors.YELLOW)} (low so far: ${usd(status.watchingLowUsd, 8)})`;
+  }
+  return `Auto-buy: ON, watching for a dip (currently ${pct(status.dropPercentFromHigh ? -status.dropPercentFromHigh : undefined)} from recent high)`;
 }
 
 export function renderDashboard(s: DashboardState): void {
