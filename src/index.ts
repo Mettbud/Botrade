@@ -250,10 +250,11 @@ async function startPoolWatcherIfEnabled(
     config.onchain.jumpPercent,
   );
   watcher.on("jump", (event: { poolLabel: string; changePercent: number }) => {
-    logger.info(
-      `⚡ on-chain jump: ${event.poolLabel} ${event.changePercent.toFixed(1)}% - triggering an early price check`,
-    );
-    priceFeed.triggerImmediateTick();
+    const triggered = priceFeed.triggerImmediateTick();
+    const outcome = triggered
+      ? "triggering an early price check"
+      : "Jupiter is currently rate-limited/backing off, this jump was NOT acted on";
+    logger.info(`⚡ on-chain jump: ${event.poolLabel} ${event.changePercent.toFixed(1)}% - ${outcome}`);
   });
   watcher.start();
   logger.info(

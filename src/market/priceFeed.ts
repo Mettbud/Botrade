@@ -76,11 +76,13 @@ export class PriceFeed extends EventEmitter {
    * would make the rate limit worse, not better. The regular (backed-off)
    * schedule still picks it up as soon as it's healthy again.
    */
-  triggerImmediateTick(): void {
-    if (!this.running || this.ticking) return;
-    if (this.consecutiveErrors > 0) return;
+  /** Returns whether it actually queued an immediate tick (false = skipped, e.g. mid-backoff). */
+  triggerImmediateTick(): boolean {
+    if (!this.running || this.ticking) return false;
+    if (this.consecutiveErrors > 0) return false;
     if (this.timer) clearTimeout(this.timer);
     this.scheduleNext(0);
+    return true;
   }
 
   stop(): void {
