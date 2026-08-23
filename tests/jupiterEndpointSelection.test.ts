@@ -4,6 +4,10 @@ import { JupiterClient } from "../src/jupiter/client.js";
 
 const BASE_ENV = {
   TARGET_TOKEN_MINT: "ApZuxdpzMrbEYTGEzeY9afh5pj9d6qPRJCTgQYiipbKg",
+  // Endpoint-selection tests intentionally inspect the first 429 rather
+  // than exercising retry timing (covered by jupiterRateLimit.test.ts).
+  JUPITER_MIN_REQUEST_INTERVAL_MS: "0",
+  JUPITER_429_MAX_RETRIES: "0",
 };
 
 function fakeErrorResponse() {

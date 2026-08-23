@@ -36,6 +36,24 @@ const positiveMillisecondsFromString = (fallback: number) =>
     .transform((v) => Number(v))
     .pipe(z.number().int().positive());
 
+const nonnegativeMillisecondsFromString = (fallback: number) =>
+  z
+    .string()
+    .default(String(fallback))
+    .transform((v) => Number(v))
+    .pipe(z.number().int().nonnegative());
+
+const boundedIntegerFromString = (
+  fallback: number,
+  minimum: number,
+  maximum: number,
+) =>
+  z
+    .string()
+    .default(String(fallback))
+    .transform((v) => Number(v))
+    .pipe(z.number().int().min(minimum).max(maximum));
+
 const trueByDefaultBoolFromString = z
   .string()
   .default("true")
@@ -52,6 +70,15 @@ const rawEnvSchema = z.object({
   // anonymous rate limit with no obvious error pointing at the key itself.
   JUPITER_API_KEY: z.string().trim().default(""),
   JUPITER_BASE_URL: z.string().trim().url().default("https://lite-api.jup.ag"),
+  // One process-wide JupiterClient serves quotes, swaps and fee estimates.
+  // Spacing every request prevents independent callers from creating a burst
+  // that exceeds the shared API bucket (especially on the free tier).
+  JUPITER_MIN_REQUEST_INTERVAL_MS: nonnegativeMillisecondsFromString(2_100),
+  // A 429 is retried only a small, bounded number of times. The client uses
+  // Jupiter's x-ratelimit-reset header when present and exponential fallback
+  // delays otherwise, while keeping later requests queued behind the retry.
+  JUPITER_429_MAX_RETRIES: boundedIntegerFromString(2, 0, 10),
+  JUPITER_429_FALLBACK_BACKOFF_MS: positiveMillisecondsFromString(5_000),
 
   // .trim() guards against a stray trailing space/newline sneaking in when
   // an address is pasted from a text editor - Jupiter rejects those with an
@@ -235,6 +262,9 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
       baseUrl: raw.JUPITER_API_KEY
         ? raw.JUPITER_BASE_URL.replace("lite-api.jup.ag", "api.jup.ag")
         : raw.JUPITER_BASE_URL,
+      minRequestIntervalMs: raw.JUPITER_MIN_REQUEST_INTERVAL_MS,
+      max429Retries: raw.JUPITER_429_MAX_RETRIES,
+      fallback429BackoffMs: raw.JUPITER_429_FALLBACK_BACKOFF_MS,
     },
     token: {
       mint: raw.TARGET_TOKEN_MINT,

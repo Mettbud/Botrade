@@ -14,6 +14,7 @@ const REFERENCE_SOL_FOR_PRICE = 1;
 export class SolPriceTracker {
   private lastPrice: number | undefined;
   private lastFetchMs = 0;
+  private inFlight: Promise<number> | undefined;
 
   constructor(
     private readonly client: JupiterClient,
@@ -29,6 +30,21 @@ export class SolPriceTracker {
       return this.lastPrice;
     }
 
+    // A price-feed tick and a trade can ask for SOL/USD at the same time.
+    // Reuse the same network request instead of consuming two Jupiter quota
+    // slots before either caller has had a chance to populate the cache.
+    if (this.inFlight) return this.inFlight;
+
+    const request = this.fetchFreshPrice();
+    this.inFlight = request;
+    try {
+      return await request;
+    } finally {
+      if (this.inFlight === request) this.inFlight = undefined;
+    }
+  }
+
+  private async fetchFreshPrice(): Promise<number> {
     const amountLamports = REFERENCE_SOL_FOR_PRICE * 10 ** SOL_DECIMALS;
     const quote = await getQuote(this.client, {
       inputMint: this.config.token.solMint,
@@ -39,7 +55,7 @@ export class SolPriceTracker {
 
     const usdcOut = Number(quote.outAmount) / 10 ** USDC_DECIMALS;
     this.lastPrice = usdcOut / REFERENCE_SOL_FOR_PRICE;
-    this.lastFetchMs = now;
+    this.lastFetchMs = Date.now();
     return this.lastPrice;
   }
 }

@@ -37,10 +37,19 @@ function formatBody(body: unknown): string {
 export class JupiterClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  private readonly minRequestIntervalMs: number;
+  private readonly max429Retries: number;
+  private readonly fallback429BackoffMs: number;
+  private requestQueue: Promise<void> = Promise.resolve();
+  private nextRequestAtMs = 0;
+  private blockedUntilMs = 0;
 
   constructor(config: BotConfig) {
     this.baseUrl = config.jupiter.baseUrl;
     this.apiKey = config.jupiter.apiKey;
+    this.minRequestIntervalMs = config.jupiter.minRequestIntervalMs;
+    this.max429Retries = config.jupiter.max429Retries;
+    this.fallback429BackoffMs = config.jupiter.fallback429BackoffMs;
   }
 
   private headers(): Record<string, string> {
@@ -59,38 +68,159 @@ export class JupiterClient {
     for (const [key, value] of Object.entries(query)) {
       url.searchParams.set(key, value);
     }
-    const res = await fetch(url, { headers: this.headers() });
-    return this.parse<T>(
-      res,
-      () => `${this.describeEndpoint()} ${path}?${url.searchParams.toString()}`,
+    return this.enqueue(() =>
+      this.requestWith429Retry<T>(
+        () => fetch(url, { headers: this.headers() }),
+        () => `${this.describeEndpoint()} ${path}?${url.searchParams.toString()}`,
+      ),
     );
   }
 
   async post<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: { ...this.headers(), "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return this.parse<T>(res, () => `${this.describeEndpoint()} ${path}`);
+    const serializedBody = JSON.stringify(body);
+    return this.enqueue(() =>
+      this.requestWith429Retry<T>(
+        () =>
+          fetch(`${this.baseUrl}${path}`, {
+            method: "POST",
+            headers: { ...this.headers(), "Content-Type": "application/json" },
+            body: serializedBody,
+          }),
+        () => `${this.describeEndpoint()} ${path}`,
+      ),
+    );
+  }
+
+  /**
+   * Every endpoint shares the same FIFO. A rejected request must not poison
+   * the tail, otherwise one API error would permanently block every request
+   * queued after it.
+   */
+  private enqueue<T>(request: () => Promise<T>): Promise<T> {
+    const result = this.requestQueue.then(request);
+    this.requestQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  /** Holds its FIFO slot across retries so later calls cannot worsen a 429. */
+  private async requestWith429Retry<T>(
+    request: () => Promise<Response>,
+    describeRequest: () => string,
+  ): Promise<T> {
+    let retryCount = 0;
+
+    while (true) {
+      await this.waitForRequestSlot();
+      const res = await request();
+
+      if (res.status !== 429) {
+        return this.parse<T>(res, describeRequest);
+      }
+
+      const error = await this.toApiError(res, describeRequest);
+      // Even when this caller has exhausted its own retry budget, preserve
+      // the server's backoff for work already queued behind it. Otherwise a
+      // failed request would immediately hand the same hot rate-limit bucket
+      // to the next caller and create another avoidable 429.
+      this.blockedUntilMs = Math.max(
+        this.blockedUntilMs,
+        this.resolve429RetryAtMs(res.headers, retryCount),
+      );
+      if (retryCount >= this.max429Retries) {
+        throw error;
+      }
+
+      retryCount += 1;
+    }
+  }
+
+  private async waitForRequestSlot(): Promise<void> {
+    const waitMs = Math.max(
+      0,
+      Math.max(this.nextRequestAtMs, this.blockedUntilMs) - Date.now(),
+    );
+    if (waitMs > 0) {
+      await delay(waitMs);
+    }
+
+    const startedAtMs = Date.now();
+    this.nextRequestAtMs = startedAtMs + this.minRequestIntervalMs;
+  }
+
+  private resolve429RetryAtMs(headers: Headers, retryCount: number): number {
+    const now = Date.now();
+    const reset = parseDelayHeader(headers.get("x-ratelimit-reset"), now, true);
+    if (reset !== undefined) return reset;
+
+    const retryAfter = parseDelayHeader(headers.get("retry-after"), now, false);
+    if (retryAfter !== undefined) return retryAfter;
+
+    return now + this.fallback429BackoffMs * 2 ** retryCount;
+  }
+
+  private async toApiError(
+    res: Response,
+    describeRequest: () => string,
+  ): Promise<JupiterApiError> {
+    const body = await readResponseBody(res);
+    return new JupiterApiError(
+      res.status,
+      res.statusText,
+      body,
+      describeRequest(),
+    );
   }
 
   private async parse<T>(res: Response, describeRequest: () => string): Promise<T> {
-    const text = await res.text();
-    // The error body isn't always JSON (could be an HTML error page from a
-    // proxy/CDN in front of the API) - never let a parse failure here hide
-    // the real HTTP error behind a confusing "Unexpected token" instead.
-    let body: unknown;
-    if (text) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = text;
-      }
-    }
+    const body = await readResponseBody(res);
     if (!res.ok) {
       throw new JupiterApiError(res.status, res.statusText, body, describeRequest());
     }
     return body as T;
   }
+}
+
+/**
+ * Jupiter documents x-ratelimit-reset as an absolute Unix timestamp in
+ * seconds. Accepting a short relative value as well makes the client robust
+ * to gateways that forward the same concept in delta-seconds. Retry-After
+ * additionally permits an HTTP date.
+ */
+function parseDelayHeader(
+  rawValue: string | null,
+  nowMs: number,
+  unixTimestampOnly: boolean,
+): number | undefined {
+  if (!rawValue) return undefined;
+
+  const numeric = Number(rawValue);
+  if (Number.isFinite(numeric) && numeric >= 0) {
+    return numeric >= 1_000_000_000 ? numeric * 1_000 : nowMs + numeric * 1_000;
+  }
+
+  if (!unixTimestampOnly) {
+    const httpDateMs = Date.parse(rawValue);
+    if (Number.isFinite(httpDateMs)) return Math.max(nowMs, httpDateMs);
+  }
+  return undefined;
+}
+
+async function readResponseBody(res: Response): Promise<unknown> {
+  const text = await res.text();
+  // The error body isn't always JSON (could be an HTML error page from a
+  // proxy/CDN in front of the API) - never let a parse failure here hide
+  // the real HTTP error behind a confusing "Unexpected token" instead.
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -11,6 +11,8 @@ import type { Trade, TradeMode } from "../src/trading/types.js";
 class FakeExecutor implements TradeExecutor {
   readonly mode: TradeMode;
   price = 1;
+  sellCalls = 0;
+  sellGate: Promise<void> | undefined;
 
   constructor(mode: TradeMode = "PAPER") {
     this.mode = mode;
@@ -29,6 +31,8 @@ class FakeExecutor implements TradeExecutor {
   }
 
   async sell({ tokenAmount, reason }: SellParams): Promise<Trade> {
+    this.sellCalls += 1;
+    await this.sellGate;
     return {
       timestampMs: Date.now(),
       mode: this.mode,
@@ -120,6 +124,27 @@ describe("PositionManager - cascade take-profit", () => {
 
     expect(positionManager.getLastSellPriceUsd()).toBeCloseTo(0.85, 6);
     expect(positionManager.getCostBasis().tokenAmount).toBe(0);
+  });
+
+  it("does not execute duplicate automatic sells from overlapping price samples", async () => {
+    const { positionManager, executor } = ctx;
+    executor.price = 1;
+    await positionManager.manualBuy(100);
+
+    let releaseSell!: () => void;
+    executor.sellGate = new Promise<void>((resolve) => {
+      releaseSell = resolve;
+    });
+    executor.price = 1.2;
+
+    const firstSample = positionManager.handlePriceSample(1.2, 0, Date.now());
+    await Promise.resolve();
+    const overlappingSample = positionManager.handlePriceSample(1.2, 0, Date.now());
+
+    expect(executor.sellCalls).toBe(1);
+    releaseSell();
+    await Promise.all([firstSample, overlappingSample]);
+    expect(positionManager.getCostBasis().tokenAmount).toBeCloseTo(80, 6);
   });
 });
 

@@ -81,6 +81,7 @@ async function main(): Promise<void> {
   }
   const crashBuyManager = new CrashBuyManager(config);
   let crashBuyInFlight = false;
+  let crashExitInFlight = false;
   if (config.crashBuy.enabled) {
     logger.info(
       `CRASH_BUY_ENABLED: watching for a ${config.crashBuy.dropPercent}%+ drop within ${config.crashBuy.windowMs}ms, buying immediately up to $${config.crashBuy.maxUsd} (${config.crashBuy.portfolioPercent}% of available).`,
@@ -108,12 +109,24 @@ async function main(): Promise<void> {
       change1m: priceFeed.history.changePercent(60_000),
       change5m: priceFeed.history.changePercent(300_000),
     });
-    void positionManager.handlePriceSample(
-      sample.sellPriceUsd,
-      sample.priceImpactSellBps,
-      sample.timestampMs,
-      sample.spread,
-    );
+    void positionManager
+      .handlePriceSample(
+        sample.sellPriceUsd,
+        sample.priceImpactSellBps,
+        sample.timestampMs,
+        sample.spread,
+      )
+      .catch((err) => {
+        // EventEmitter does not await async listeners. Without an explicit
+        // catch, a transient Jupiter 429 becomes an unhandled rejection and
+        // Node terminates the whole bot, taking the interactive `reset`
+        // command down with it.
+        const message = String((err as Error)?.message ?? err);
+        lastErrorMessage = `strategy: ${message}`;
+        logger.error("automatic position action failed; bot remains running", {
+          err: message,
+        });
+      });
 
     if (
       autoBuyManager.evaluate(
@@ -156,6 +169,7 @@ async function main(): Promise<void> {
     if (!positionManager.hasOpenPosition()) {
       crashBuyManager.clearActivePosition();
     } else if (
+      !crashExitInFlight &&
       activePreDropPriceUsd !== undefined &&
       checkCrashBuyRebound(
         sample.sellPriceUsd,
@@ -163,13 +177,17 @@ async function main(): Promise<void> {
         config.crashBuy.reboundTolerancePercent,
       )
     ) {
+      crashExitInFlight = true;
       logger.info(
         `CRASH_BUY_EXIT: price recovered to $${sample.sellPriceUsd.toFixed(8)} (within ${config.crashBuy.reboundTolerancePercent}% of pre-crash $${activePreDropPriceUsd.toFixed(8)}) - selling in full.`,
       );
       positionManager
         .manualSell(100, "CRASH_BUY_EXIT", sample.priceImpactSellBps)
         .then(() => crashBuyManager.clearActivePosition())
-        .catch((err) => logger.error("CRASH_BUY_EXIT failed", { err: String(err) }));
+        .catch((err) => logger.error("CRASH_BUY_EXIT failed", { err: String(err) }))
+        .finally(() => {
+          crashExitInFlight = false;
+        });
     }
 
     if (!crashBuyInFlight) {

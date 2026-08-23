@@ -27,6 +27,13 @@ export class PositionManager {
   private readonly triggeredTakeProfitGains = new Set<number>();
   private readonly stopLossConfirm: TriggerConfirmation;
   private readonly trailingConfirm: TriggerConfirmation;
+  /**
+   * Price samples are emitted synchronously, but their trade execution is
+   * asynchronous. An on-chain early tick can therefore arrive while the
+   * previous sample is still selling. Keep at most one automatic sell in
+   * flight so two samples can never execute the same TP/stop concurrently.
+   */
+  private automaticSellInFlight = false;
   private lastBlockedLogMs = 0;
   /**
    * Executable price of the most recent STOP_LOSS/TRAILING_STOP/PANIC_EXIT/
@@ -103,7 +110,7 @@ export class PositionManager {
     /** Fraction form (e.g. 0.005 = 0.5%), same units as PriceSample.spread. */
     spreadFraction = 0,
   ): Promise<void> {
-    if (this.costBasis.tokenAmount <= 0) return;
+    if (this.costBasis.tokenAmount <= 0 || this.automaticSellInFlight) return;
 
     const evaluation = evaluatePosition(
       this.costBasis,
@@ -127,11 +134,23 @@ export class PositionManager {
     const gainPercent = evaluation.unrealized?.percent;
 
     if (confirmedStopLoss) {
-      await this.autoSell(100, "STOP_LOSS", sellImpactBps, spreadBps, gainPercent);
+      await this.runAutomaticSell(
+        100,
+        "STOP_LOSS",
+        sellImpactBps,
+        spreadBps,
+        gainPercent,
+      );
     } else if (confirmedTrailing) {
-      await this.autoSell(100, "TRAILING_STOP", sellImpactBps, spreadBps, gainPercent);
+      await this.runAutomaticSell(
+        100,
+        "TRAILING_STOP",
+        sellImpactBps,
+        spreadBps,
+        gainPercent,
+      );
     } else if (evaluation.cascadeTakeProfit) {
-      await this.autoSell(
+      await this.runAutomaticSell(
         evaluation.cascadeTakeProfit.sellPercent,
         "TAKE_PROFIT",
         sellImpactBps,
@@ -140,7 +159,7 @@ export class PositionManager {
       );
     } else if (evaluation.dueTakeProfitLevels.length > 0) {
       const level = evaluation.dueTakeProfitLevels[0]!;
-      await this.autoSell(
+      await this.runAutomaticSell(
         level.sellPercent,
         "TAKE_PROFIT",
         sellImpactBps,
@@ -148,6 +167,32 @@ export class PositionManager {
         gainPercent,
         level.gainPercent,
       );
+    }
+  }
+
+  private async runAutomaticSell(
+    percentOfPosition: number,
+    reason: TradeReason,
+    currentImpactBps: number,
+    currentSpreadBps: number,
+    unrealizedGainPercent: number | undefined,
+    takeProfitGainLevel?: number,
+  ): Promise<void> {
+    if (this.automaticSellInFlight) return;
+    this.automaticSellInFlight = true;
+    try {
+      await this.autoSell(
+        percentOfPosition,
+        reason,
+        currentImpactBps,
+        currentSpreadBps,
+        unrealizedGainPercent,
+        takeProfitGainLevel,
+      );
+    } finally {
+      // A rejected Jupiter request must release the lock so the next fresh
+      // sample can retry instead of leaving automatic exits disabled forever.
+      this.automaticSellInFlight = false;
     }
   }
 

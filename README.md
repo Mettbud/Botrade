@@ -340,20 +340,25 @@ that:
   visible on the dashboard itself until the next successful price update,
   instead of disappearing on the next clear.
 
-If you see `429 Too Many Requests` a lot: the bot already backs off
-automatically (it waits longer after each consecutive failure, up to 30s),
-but the real fix is a free API key from https://portal.jup.ag pasted into
-`JUPITER_API_KEY` - it switches the bot from the shared free tier
-(`lite-api.jup.ag`) to the keyed one (`api.jup.ag`) with a much higher
-limit, at no cost. `PRICE_POLL_INTERVAL_MS` below ~1000ms will still find
-that limit eventually since every tick is normally 2 requests (buy + sell
-quote) - **except** while the bot has no open position, where it only
-fetches the buy quote and estimates the sell price from the last known
-spread (roughly halving API load in the common "watching, not holding"
-case). The dashboard marks an estimated sell price with `(est., not
-live-quoted while flat)`; the instant a position opens, both sides go back
-to real, freshly-quoted prices, since that's when exit-price accuracy on
-stop loss / trailing stop / take profit actually matters.
+All Jupiter GET/POST calls (price quotes, trade quotes and paper fee
+estimates) now pass through one process-wide FIFO. Their starts are spaced by
+`JUPITER_MIN_REQUEST_INTERVAL_MS` (2100 ms by default), so an on-chain early
+tick cannot burst requests on top of a take-profit sell. A `429 Too Many
+Requests` stays at the front of that queue, honors Jupiter's reset/retry
+header when available and retries at most `JUPITER_429_MAX_RETRIES` times;
+the exponential fallback begins at `JUPITER_429_FALLBACK_BACKOFF_MS`. If the
+bounded retries still fail, the action is logged and the bot remains alive —
+the interactive `reset` command is not lost.
+
+A free API key from https://portal.jup.ag belongs in `JUPITER_API_KEY`; it
+switches the host from `lite-api.jup.ag` to `api.jup.ag`. Keep the conservative
+2100 ms spacing unless the quota documented for your plan clearly permits a
+lower value. `PRICE_POLL_INTERVAL_MS` is not a complete rate limiter by itself:
+one tick can need buy and sell quotes, while a trade can add quote/swap or fee
+requests. While flat, the feed normally fetches only the buy quote and estimates
+the sell price from the last known spread. The dashboard marks that estimate;
+as soon as a position opens, both sides return to fresh quotes for accurate
+stop-loss, trailing-stop and take-profit decisions.
 
 ## Data storage
 
