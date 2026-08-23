@@ -2,12 +2,31 @@ import type { BotConfig } from "../config/index.js";
 
 export class JupiterApiError extends Error {
   constructor(
-    message: string,
-    readonly status: number,
+    status: number,
+    statusText: string,
     readonly body: unknown,
   ) {
-    super(message);
+    super(`Jupiter API ${status} ${statusText}${formatBody(body)}`);
+    this.status = status;
     this.name = "JupiterApiError";
+  }
+
+  readonly status: number;
+}
+
+/**
+ * Jupiter's error responses carry the actual reason (bad mint, no route,
+ * invalid param) in the body - folding it into the message means it shows
+ * up wherever the error is logged (`String(err)`), not just on a `.body`
+ * property nobody reads in a terminal.
+ */
+function formatBody(body: unknown): string {
+  if (body === undefined) return "";
+  if (typeof body === "string") return ` - ${body}`;
+  try {
+    return ` - ${JSON.stringify(body)}`;
+  } catch {
+    return "";
   }
 }
 
@@ -47,13 +66,19 @@ export class JupiterClient {
 
   private async parse<T>(res: Response): Promise<T> {
     const text = await res.text();
-    const body = text ? JSON.parse(text) : undefined;
+    // The error body isn't always JSON (could be an HTML error page from a
+    // proxy/CDN in front of the API) - never let a parse failure here hide
+    // the real HTTP error behind a confusing "Unexpected token" instead.
+    let body: unknown;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
     if (!res.ok) {
-      throw new JupiterApiError(
-        `Jupiter API ${res.status} ${res.statusText}`,
-        res.status,
-        body,
-      );
+      throw new JupiterApiError(res.status, res.statusText, body);
     }
     return body as T;
   }
