@@ -113,18 +113,28 @@ async function main(): Promise<void> {
         positionManager.getLastSellPriceUsd(),
       )
     ) {
-      const sizeUsd = resolveAutoBuySizeUsd(
-        executor.mode,
-        executor instanceof PaperTrader ? executor.usdBalance : 0,
-        config.trading.maxTradeUsd,
-        config.trading.paperPositionSizePercent,
-      );
-      logger.info(`AUTO_BUY: dip rebound detected, buying $${sizeUsd.toFixed(2)}`);
-      positionManager
-        .manualBuy(sizeUsd, "AUTO_BUY")
-        .catch((err) =>
-          logger.error("AUTO_BUY failed", { err: String(err) }),
-        );
+      void (async () => {
+        try {
+          const availableUsd =
+            executor instanceof PaperTrader
+              ? executor.usdBalance
+              : await computeLiveAvailableUsd(config, solBalance, solPrice);
+          const sizeUsd = resolveAutoBuySizeUsd(
+            executor.mode,
+            availableUsd,
+            config.trading.maxTradeUsd,
+            config.trading.paperPositionSizePercent,
+          );
+          if (sizeUsd <= 0) {
+            logger.warn("AUTO_BUY signal fired but computed size was $0 - skipped.");
+            return;
+          }
+          logger.info(`AUTO_BUY: dip rebound detected, buying $${sizeUsd.toFixed(2)}`);
+          await positionManager.manualBuy(sizeUsd, "AUTO_BUY");
+        } catch (err) {
+          logger.error("AUTO_BUY failed", { err: String(err) });
+        }
+      })();
     }
 
     // Crash-buy exit: if a crash-buy position is open and price has
@@ -162,9 +172,7 @@ async function main(): Promise<void> {
         crashBuyInFlight = true;
         void (async () => {
           try {
-            const solUsdPrice = await solPrice.getPrice();
-            const liveAvailableUsd =
-              Math.max(0, solBalance - config.trading.minSolReserve) * solUsdPrice;
+            const liveAvailableUsd = await computeLiveAvailableUsd(config, solBalance, solPrice);
             const sizeUsd = resolveCrashBuySizeUsd(
               executor.mode,
               executor instanceof PaperTrader ? executor.usdBalance : 0,
@@ -337,6 +345,16 @@ async function startPoolWatcherIfEnabled(
     `ONCHAIN_WATCH_ENABLED: watching ${watchedPools.length} pool(s) directly via RPC as a fast trigger.`,
   );
   return watcher;
+}
+
+/** LIVE-mode "available balance" for percent-of-balance sizing (auto-buy, crash-buy): the wallet's SOL above MIN_SOL_RESERVE, converted to USD. */
+async function computeLiveAvailableUsd(
+  config: ReturnType<typeof getConfig>,
+  solBalance: number,
+  solPrice: SolPriceTracker,
+): Promise<number> {
+  const solUsdPrice = await solPrice.getPrice();
+  return Math.max(0, solBalance - config.trading.minSolReserve) * solUsdPrice;
 }
 
 function replayPaperUsdBalance(repo: TradesRepo, startingUsd: number): number {

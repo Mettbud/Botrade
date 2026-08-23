@@ -1,20 +1,23 @@
 import type { TradeMode } from "./types.js";
 
 /**
- * How much to spend on an auto-buy, in USD.
- *
- * LIVE always uses maxTradeUsd, full stop - this is the real-money safety
- * cap and nothing about this function ever raises it. PAPER instead sizes
- * as a percent of the current paper balance, so it can realistically show
- * how a $100 pool grows/shrinks over many trades - deliberately NOT capped
- * by maxTradeUsd, since paper trades risk nothing real.
+ * How much to spend on an auto-buy, in USD. Both PAPER and LIVE size as
+ * positionSizePercent% of `availableUsd` (PAPER's simulated balance, or
+ * LIVE's real SOL balance above MIN_SOL_RESERVE converted to USD) - so
+ * paper trading actually previews what live will do, not a different
+ * strategy. The one asymmetry that remains: LIVE is additionally capped at
+ * `maxTradeUsd` (the real-money safety ceiling - raise it in .env if you
+ * want bigger live trades), while PAPER is deliberately left uncapped by
+ * it, since paper trades risk nothing real and the whole point can be
+ * previewing sizes larger than maxTradeUsd.
  */
 export function resolveAutoBuySizeUsd(
   mode: TradeMode,
-  paperBalanceUsd: number,
+  availableUsd: number,
   maxTradeUsd: number,
-  paperPositionSizePercent: number,
+  positionSizePercent: number,
 ): number {
-  if (mode === "LIVE") return maxTradeUsd;
-  return paperBalanceUsd * (paperPositionSizePercent / 100);
+  const sized = Math.max(0, availableUsd) * (positionSizePercent / 100);
+  if (mode === "LIVE") return Math.min(sized, maxTradeUsd);
+  return sized;
 }

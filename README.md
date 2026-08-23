@@ -161,17 +161,17 @@ way; raise it for deliberate breathing room between purchases.
 The dashboard shows `Auto-buy: OFF` / `ON, watching for a dip (...)` /
 `WATCHING for rebound (...)` so you can see what state it's in at a glance.
 
-**Position sizing differs by mode, on purpose.** In LIVE, every auto-buy is
-exactly `MAX_TRADE_USD` - always, no exceptions, that cap is never raised
-by anything in this section. In PAPER, auto-buys instead spend
-`PAPER_POSITION_SIZE_PERCENT`% of the *current* paper balance (default
-5%), so a $100 paper pool actually compounds/shrinks across many trades
-instead of always trading the same $1 - deliberately not capped by
-`MAX_TRADE_USD`, since paper trades risk nothing real. This means paper
-results at the default settings preview the *strategy*, not the exact
-dollar amounts LIVE will use - if you want paper to also preview LIVE's
-sizing 1:1, set `PAPER_POSITION_SIZE_PERCENT` so that percent of your
-paper balance equals `MAX_TRADE_USD`.
+**Position sizing is the same formula on both modes, with one guardrail
+that only applies to LIVE.** Every auto-buy spends
+`PAPER_POSITION_SIZE_PERCENT`% of the *current available balance* -
+PAPER's simulated balance, or LIVE's real SOL balance above
+`MIN_SOL_RESERVE` converted to USD - so paper trading actually previews
+what live will do, not a different strategy. The one asymmetry: LIVE
+auto-buys additionally never exceed `MAX_TRADE_USD` (the real-money safety
+ceiling - raise it in `.env` if you want bigger live auto-buys, that's the
+one dial that controls it), while PAPER is deliberately left uncapped by
+it, since paper trades risk nothing real and the whole point can be
+previewing sizes larger than `MAX_TRADE_USD`.
 
 ### Take-profit modes: entry ladder vs cascade
 
